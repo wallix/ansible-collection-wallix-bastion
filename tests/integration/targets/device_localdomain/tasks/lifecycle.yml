@@ -1,0 +1,199 @@
+---
+# Full lifecycle of wallix.bastion.device_localdomain against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test device name
+  ansible.builtin.set_fact:
+    test_device: ansible-test-localdomain-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+
+- name: Device local domain lifecycle
+  block:
+    - name: Create parent device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.21
+
+    - name: Create local domain (check mode)
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+      check_mode: true
+      register: create_check
+
+    - name: Look up local domain after check mode
+      wallix.bastion.device_localdomain_info:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.localdomains | length == 0
+
+    - name: Try to create the local domain with an admin account
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        admin_account: root
+      register: create_admin
+      ignore_errors: true
+
+    - name: Assert admin_account is refused on creation
+      ansible.builtin.assert:
+        that:
+          - create_admin is failed
+          - "'admin_account cannot be set' in create_admin.msg"
+
+    - name: Create local domain with a generated SSH CA
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+      register: create
+
+    - name: Assert local domain was created without returning secrets
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.localdomain.id | length > 0
+          - create.localdomain.ca_public_key is match('ssh-ed25519 ')
+          - "'ca_private_key' not in create.localdomain"
+
+    - name: Create local domain again
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+      register: create_again
+
+    - name: Assert second create is a no-op and the key was kept
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.localdomain.id == create.localdomain.id
+          - create_again.localdomain.ca_public_key == create.localdomain.ca_public_key
+
+    - name: Update the description only
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        description: Updated
+      diff: true
+      register: update
+
+    - name: Assert only the description changed
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['description']
+          - update.localdomain.description == 'Updated'
+          - update.localdomain.ca_public_key == create.localdomain.ca_public_key
+          - update.diff.before.description != update.diff.after.description
+
+    - name: Regenerate the SSH CA with update_password=always
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        ca_private_key: generate:ED25519
+        update_password: always
+      register: regenerate
+
+    - name: Assert the key was replaced
+      ansible.builtin.assert:
+        that:
+          - regenerate is changed
+          - regenerate.changed_fields == ['ca_private_key']
+          - regenerate.localdomain.ca_public_key != create.localdomain.ca_public_key
+
+    - name: Create an account to administer the local domain
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: root
+        account_login: root
+
+    - name: Enable password change with an admin account
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        admin_account: root
+        enable_password_change: true
+        password_change_policy: default
+        password_change_plugin: Unix
+        password_change_plugin_parameters: {}
+      register: pwchange
+
+    - name: Enable password change again
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        admin_account: root
+        enable_password_change: true
+        password_change_policy: default
+        password_change_plugin: Unix
+        password_change_plugin_parameters: {}
+      register: pwchange_again
+
+    - name: Assert password change was enabled once
+      ansible.builtin.assert:
+        that:
+          - pwchange is changed
+          - pwchange.localdomain.admin_account == 'root'
+          - pwchange.localdomain.enable_password_change
+          - pwchange.localdomain.password_change_plugin == 'Unix'
+          - pwchange.localdomain.description == 'Updated'
+          - pwchange_again is not changed
+
+    - name: Remove the admin account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: root
+        state: absent
+
+    - name: Delete local domain
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete
+
+    - name: Delete local domain again
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up local domain after delete
+      wallix.bastion.device_localdomain_info:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+      register: after_delete
+
+    - name: Assert local domain is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.localdomains | length == 0
+
+  always:
+    # The Bastion refuses to delete a device that still has accounts.
+    - name: Clean up test account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: root
+        state: absent
+
+    - name: Clean up test device and its local domains
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

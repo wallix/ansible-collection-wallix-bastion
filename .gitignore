@@ -1,0 +1,10 @@
+/tests/output/
+/changelogs/.plugin-cache.yaml
+*.tar.gz
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+/.ansible/
+/collections/
+/tests/integration/integration_config.yml

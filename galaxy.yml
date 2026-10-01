@@ -1,0 +1,30 @@
+---
+namespace: wallix
+name: bastion
+version: 1.0.0
+readme: README.md
+authors:
+  - WALLIX
+description: Manage WALLIX Bastion objects (devices, users, authorizations, ...) through its REST API.
+license:
+  - GPL-3.0-or-later
+tags:
+  - wallix
+  - bastion
+  - pam
+  - security
+  - identity
+dependencies: {}
+repository: https://github.com/wallix/ansible-collection-wallix-bastion
+documentation: https://github.com/wallix/ansible-collection-wallix-bastion/tree/main/docs
+homepage: https://www.wallix.com
+issues: https://github.com/wallix/ansible-collection-wallix-bastion/issues
+build_ignore:
+  - .github
+  - .gitignore
+  - .ansible-lint
+  - "*.tar.gz"
+  - tests/output
+  - changelogs/.plugin-cache.yaml
+  - collections
+  - .ansible

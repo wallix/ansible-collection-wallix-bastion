@@ -1,0 +1,283 @@
+---
+# Full lifecycle of wallix.bastion.targetgroup against a real Bastion.
+# Connection comes from main.yml (module_defaults). The targets are created with the other modules
+# of the collection: a device with an SSH service, a local domain and account on it, and a global
+# domain whose account is usable on the service.
+- name: Pick a unique test suffix
+  ansible.builtin.set_fact:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_group: ansible-test-tg-{{ test_suffix }}
+    test_device: ansible-test-tgdev-{{ test_suffix }}
+    test_local_domain: ansible-test-tgld-{{ test_suffix }}
+    test_global_domain: ansible-test-tggd-{{ test_suffix }}
+    test_local_account: ansible-test-tglacc-{{ test_suffix }}
+    test_global_account: ansible-test-tggacc-{{ test_suffix }}
+
+- name: Pick the target group items
+  ansible.builtin.set_fact:
+    local_session: {account: "{{ test_local_account }}", domain: "{{ test_local_domain }}", domain_type: local,
+                    device: "{{ test_device }}", service: SSH}
+    global_session: {account: "{{ test_global_account }}", domain: "{{ test_global_domain }}", domain_type: global,
+                     device: "{{ test_device }}", service: SSH}
+    local_password: {account: "{{ test_local_account }}", domain: "{{ test_local_domain }}", domain_type: local,
+                     device: "{{ test_device }}"}
+    global_scenario: {account: "{{ test_global_account }}", domain: "{{ test_global_domain }}", domain_type: global}
+    ssh_service: {device: "{{ test_device }}", service: SSH}
+    kill_rm: {action: kill, rules: "rm -rf", subprotocol: SSH_SHELL_SESSION}
+
+- name: Target group lifecycle
+  block:
+    - name: Create the global domain
+      wallix.bastion.domain:
+        domain_name: "{{ test_global_domain }}"
+
+    - name: Create the device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.10
+
+    - name: Create the SSH service, open to the global domain
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        connection_policy: SSH
+        protocol: SSH
+        port: 22
+        subprotocols: [SSH_SHELL_SESSION]
+        global_domains: ["{{ test_global_domain }}"]
+
+    - name: Create the local domain
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_local_domain }}"
+
+    - name: Create the local account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_local_domain }}"
+        account_name: "{{ test_local_account }}"
+        account_login: root
+
+    - name: Create the global account
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_global_domain }}"
+        account_name: "{{ test_global_account }}"
+        account_login: admin
+        resources: ["{{ test_device }}:SSH"]
+
+    - name: Create target group with an inconsistent item
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        session_accounts:
+          - {account: "{{ test_local_account }}", domain: "{{ test_local_domain }}", domain_type: local,
+             device: "{{ test_device }}"}
+      register: bad_item
+      ignore_errors: true
+
+    - name: Create target group (check mode)
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        session_accounts: ["{{ local_session }}", "{{ global_session }}"]
+        session_interactive_logins: ["{{ ssh_service }}"]
+        session_account_mappings: ["{{ ssh_service }}"]
+        session_scenario_accounts: ["{{ global_scenario }}"]
+        password_retrieval_accounts: ["{{ local_password }}"]
+        restrictions: ["{{ kill_rm }}"]
+      check_mode: true
+      register: create_check
+
+    - name: Look up target group after check mode
+      wallix.bastion.targetgroup_info:
+        group_name: "{{ test_group }}"
+      register: after_check
+
+    - name: Assert the bad item failed and check mode made no change
+      ansible.builtin.assert:
+        that:
+          - bad_item is failed
+          - "'device and service, or application, must be set' in bad_item.msg"
+          - create_check is changed
+          - after_check.targetgroups | length == 0
+
+    - name: Create target group
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        session_accounts: ["{{ local_session }}", "{{ global_session }}"]
+        session_interactive_logins: ["{{ ssh_service }}"]
+        session_account_mappings: ["{{ ssh_service }}"]
+        session_scenario_accounts: ["{{ global_scenario }}"]
+        password_retrieval_accounts: ["{{ local_password }}"]
+        restrictions: ["{{ kill_rm }}"]
+      register: create
+
+    - name: Assert target group was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.targetgroup.id | length > 0
+          - create.targetgroup.session_accounts | length == 2
+          - local_session in create.targetgroup.session_accounts
+          - global_session in create.targetgroup.session_accounts
+          - create.targetgroup.session_interactive_logins == [ssh_service]
+          - create.targetgroup.session_account_mappings == [ssh_service]
+          - create.targetgroup.session_scenario_accounts == [global_scenario]
+          - create.targetgroup.password_retrieval_accounts == [local_password]
+          - create.targetgroup.restrictions == [kill_rm]
+
+    - name: Create target group again, lists reordered
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        session_accounts: ["{{ global_session }}", "{{ local_session }}"]
+        session_interactive_logins: ["{{ ssh_service }}"]
+        session_account_mappings: ["{{ ssh_service }}"]
+        session_scenario_accounts: ["{{ global_scenario }}"]
+        password_retrieval_accounts: ["{{ local_password }}"]
+        restrictions: ["{{ kill_rm }}"]
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.targetgroup.id == create.targetgroup.id
+
+    - name: Remove the global session account
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        session_accounts: ["{{ local_session }}"]
+      diff: true
+      register: remove_one
+
+    - name: Look up target group after the removal
+      wallix.bastion.targetgroup_info:
+        group_name: "{{ test_group }}"
+      register: after_remove
+
+    - name: Assert only that account was removed
+      ansible.builtin.assert:
+        that:
+          - remove_one is changed
+          - remove_one.changed_fields == ['session_accounts']
+          - remove_one.diff.before.session_accounts | length == 2
+          - remove_one.diff.after.session_accounts == [local_session]
+          - after_remove.targetgroups[0].session_accounts == [local_session]
+          - after_remove.targetgroups[0].session_interactive_logins == [ssh_service]
+          - after_remove.targetgroups[0].session_account_mappings == [ssh_service]
+          - after_remove.targetgroups[0].session_scenario_accounts == [global_scenario]
+          - after_remove.targetgroups[0].password_retrieval_accounts == [local_password]
+          - after_remove.targetgroups[0].restrictions == [kill_rm]
+          - after_remove.targetgroups[0].description == 'Created by the wallix.bastion integration tests'
+
+    - name: Update the description only
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        description: Updated
+      register: update_description
+
+    - name: Assert the lists were kept
+      ansible.builtin.assert:
+        that:
+          - update_description is changed
+          - update_description.changed_fields == ['description']
+          - update_description.targetgroup.session_accounts == [local_session]
+          - update_description.targetgroup.restrictions == [kill_rm]
+
+    - name: Empty every list
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        session_accounts: []
+        session_interactive_logins: []
+        session_account_mappings: []
+        session_scenario_accounts: []
+        password_retrieval_accounts: []
+        restrictions: []
+      register: empty
+
+    - name: Empty every list again
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        session_accounts: []
+        session_interactive_logins: []
+        session_account_mappings: []
+        session_scenario_accounts: []
+        password_retrieval_accounts: []
+        restrictions: []
+      register: empty_again
+
+    - name: Assert every list was emptied
+      ansible.builtin.assert:
+        that:
+          - empty is changed
+          - empty_again is not changed
+          - empty.targetgroup.session_accounts == []
+          - empty.targetgroup.session_interactive_logins == []
+          - empty.targetgroup.session_account_mappings == []
+          - empty.targetgroup.session_scenario_accounts == []
+          - empty.targetgroup.password_retrieval_accounts == []
+          - empty.targetgroup.restrictions == []
+          - empty.targetgroup.description == 'Updated'
+
+    - name: Delete target group
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        state: absent
+      register: delete
+
+    - name: Delete target group again
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up target group after delete
+      wallix.bastion.targetgroup_info:
+        group_name: "{{ test_group }}"
+      register: after_delete
+
+    - name: Assert target group is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.targetgroups | length == 0
+
+  always:
+    - name: Clean up test target group
+      wallix.bastion.targetgroup:
+        group_name: "{{ test_group }}"
+        state: absent
+
+    - name: Clean up the global account
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_global_domain }}"
+        account_name: "{{ test_global_account }}"
+        state: absent
+
+    - name: Clean up the local account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_local_domain }}"
+        account_name: "{{ test_local_account }}"
+        state: absent
+
+    - name: Clean up the local domain
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_local_domain }}"
+        state: absent
+
+    - name: Clean up the device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent
+
+    - name: Clean up the global domain
+      wallix.bastion.domain:
+        domain_name: "{{ test_global_domain }}"
+        state: absent

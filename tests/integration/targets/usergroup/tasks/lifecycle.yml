@@ -1,0 +1,182 @@
+---
+# Full lifecycle of wallix.bastion.usergroup against a real Bastion.
+# Connection comes from main.yml (module_defaults). The members are test users created with
+# wallix.bastion.user; the timeframe is "allthetime", which every Bastion has.
+- name: Pick a unique test suffix
+  ansible.builtin.set_fact:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_group: ansible-test-group-{{ test_suffix }}
+    test_users:
+      - ansible-test-guser1-{{ test_suffix }}
+      - ansible-test-guser2-{{ test_suffix }}
+
+- name: User group lifecycle
+  block:
+    - name: Create test users
+      wallix.bastion.user:
+        user_name: "{{ item }}"
+        email: ansible-test@example.com
+        profile: user
+        user_auths: [local_password]
+        password: Aa1-{{ lookup('ansible.builtin.password', '/dev/null', length=16, chars=['ascii_letters', 'digits']) }}
+      loop: "{{ test_users }}"
+
+    - name: Create group (check mode)
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        timeframes: [allthetime]
+        users: "{{ test_users }}"
+        restrictions:
+          - {action: kill, rules: "rm -rf", subprotocol: SSH_SHELL_SESSION}
+          - {action: notify, rules: "sudo", subprotocol: SSH_SHELL_SESSION}
+      check_mode: true
+      register: create_check
+
+    - name: Look up group after check mode
+      wallix.bastion.usergroup_info:
+        group_name: "{{ test_group }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.usergroups | length == 0
+
+    - name: Create group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        timeframes: [allthetime]
+        users: "{{ test_users }}"
+        restrictions:
+          - {action: kill, rules: "rm -rf", subprotocol: SSH_SHELL_SESSION}
+          - {action: notify, rules: "sudo", subprotocol: SSH_SHELL_SESSION}
+      register: create
+
+    - name: Assert group was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.usergroup.id | length > 0
+          - create.usergroup.timeframes == ['allthetime']
+          - create.usergroup.users | sort == test_users | sort
+          - create.usergroup.restrictions | length == 2
+          - "'id' not in create.usergroup.restrictions[0]"
+
+    - name: Create group again, lists reordered
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        description: Created by the wallix.bastion integration tests
+        timeframes: [allthetime]
+        users: "{{ test_users | reverse }}"
+        restrictions:
+          - {action: notify, rules: "sudo", subprotocol: SSH_SHELL_SESSION}
+          - {action: kill, rules: "rm -rf", subprotocol: SSH_SHELL_SESSION}
+      register: create_again
+
+    - name: Look up a member
+      wallix.bastion.user_info:
+        user_name: "{{ test_users[0] }}"
+      register: member
+
+    - name: Assert second create is a no-op and the user sees its group
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.usergroup.id == create.usergroup.id
+          - member.users[0].groups == [test_group]
+
+    - name: Replace restrictions and members
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        users: "{{ test_users[:1] }}"
+        restrictions:
+          - {action: notify, rules: "passwd", subprotocol: SSH_SHELL_SESSION}
+      diff: true
+      register: update
+
+    - name: Assert lists were replaced and other options kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['restrictions', 'users']
+          - update.usergroup.users == test_users[:1]
+          - "update.usergroup.restrictions == [{'action': 'notify', 'rules': 'passwd', 'subprotocol': 'SSH_SHELL_SESSION'}]"
+          - update.usergroup.description == 'Created by the wallix.bastion integration tests'
+          - update.usergroup.timeframes == ['allthetime']
+          - update.diff.before.users != update.diff.after.users
+
+    - name: Update the description only
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        description: Updated
+      register: update_description
+
+    - name: Assert members and restrictions were kept
+      ansible.builtin.assert:
+        that:
+          - update_description is changed
+          - update_description.changed_fields == ['description']
+          - update_description.usergroup.users == test_users[:1]
+          - update_description.usergroup.restrictions | length == 1
+
+    - name: Remove the group from the user side
+      wallix.bastion.user:
+        user_name: "{{ test_users[0] }}"
+        groups: []
+      register: user_groups
+
+    - name: Empty the restrictions
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        restrictions: []
+      register: no_restrictions
+
+    - name: Assert membership is shared between both modules
+      ansible.builtin.assert:
+        that:
+          - user_groups is changed
+          - no_restrictions is changed
+          - no_restrictions.usergroup.users == []
+          - no_restrictions.usergroup.restrictions == []
+
+    - name: Delete group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        state: absent
+      register: delete
+
+    - name: Delete group again
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up group after delete
+      wallix.bastion.usergroup_info:
+        group_name: "{{ test_group }}"
+      register: after_delete
+
+    - name: Assert group is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.usergroups | length == 0
+
+  always:
+    - name: Clean up test group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        state: absent
+
+    - name: Clean up test users
+      wallix.bastion.user:
+        user_name: "{{ item }}"
+        state: absent
+      loop: "{{ test_users }}"

@@ -1,0 +1,7 @@
+---
+# Copy to integration_config.yml (git-ignored) and fill in a TEST Bastion.
+# The integration tests create objects named ansible-test-* and delete them.
+wallix_bastion_host: bastion.example.com
+wallix_bastion_user: admin
+wallix_bastion_token: ""        # or wallix_bastion_password
+# wallix_bastion_validate_certs: false   # self-signed test instances only

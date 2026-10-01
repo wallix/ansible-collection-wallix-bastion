@@ -1,0 +1,33 @@
+---
+requires_ansible: ">=2.16.0"
+action_groups:
+  bastion:
+    - device
+    - device_info
+    - device_service
+    - device_service_info
+    - device_localdomain
+    - device_localdomain_info
+    - device_localdomain_account
+    - device_localdomain_account_info
+    - device_localdomain_account_credential
+    - device_localdomain_account_credential_info
+    - domain
+    - domain_info
+    - domain_account
+    - domain_account_info
+    - domain_account_credential
+    - domain_account_credential_info
+    - user
+    - user_info
+    - usergroup
+    - usergroup_info
+    - targetgroup
+    - targetgroup_info
+    - authorization
+    - authorization_info
+    - connection_policy
+    - connection_policy_info
+    - timeframe
+    - timeframe_info
+    - secret

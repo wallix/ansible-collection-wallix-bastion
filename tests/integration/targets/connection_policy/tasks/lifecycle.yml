@@ -1,0 +1,157 @@
+---
+# Full lifecycle of wallix.bastion.connection_policy against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test connection policy name
+  ansible.builtin.set_fact:
+    test_policy: ansible-test-policy-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Connection policy lifecycle
+  block:
+    - name: Create connection policy (check mode)
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        protocol: SSH
+        description: Created by the wallix.bastion integration tests
+        authentication_methods: [PASSWORD_MAPPING, PASSWORD_VAULT]
+        options:
+          session:
+            inactivity_timeout: 600
+      check_mode: true
+      register: create_check
+
+    - name: Look up connection policy after check mode
+      wallix.bastion.connection_policy_info:
+        connection_policy_name: "{{ test_policy }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.connection_policies | length == 0
+
+    - name: Create connection policy
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        protocol: SSH
+        description: Created by the wallix.bastion integration tests
+        authentication_methods: [PASSWORD_MAPPING, PASSWORD_VAULT]
+        options:
+          session:
+            inactivity_timeout: 600
+      register: create
+
+    - name: Assert connection policy was created with the Bastion defaults filled in
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.connection_policy.id | length > 0
+          - create.connection_policy.protocol == 'SSH'
+          - create.connection_policy.type == 'SSH'
+          - create.connection_policy.is_default == false
+          - create.connection_policy.options.session.inactivity_timeout == 600
+          - "'server_keepalive_type' in create.connection_policy.options.session"
+          - "'trace' in create.connection_policy.options"
+
+    - name: Create connection policy again, methods and option keys in another order, options as JSON
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        protocol: SSH
+        type: SSH
+        description: Created by the wallix.bastion integration tests
+        authentication_methods: [PASSWORD_VAULT, PASSWORD_MAPPING]
+        options: '{"session": {"server_keepalive_type": "none", "inactivity_timeout": 600}}'
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.connection_policy.id == create.connection_policy.id
+
+    - name: Change one option key
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        options:
+          trace:
+            log_all_kbd: true
+      diff: true
+      register: update
+
+    - name: Assert the option was merged and everything else kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['options']
+          - update.connection_policy.options.trace.log_all_kbd == true
+          - update.connection_policy.options.session.inactivity_timeout == 600
+          - update.connection_policy.description == 'Created by the wallix.bastion integration tests'
+          - update.connection_policy.authentication_methods | sort == ['PASSWORD_MAPPING', 'PASSWORD_VAULT']
+          - update.diff.before.options.trace.log_all_kbd == false
+          - update.diff.after.options.trace.log_all_kbd == true
+
+    - name: Change the description and the authentication methods
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        description: Updated
+        authentication_methods: [PASSWORD_VAULT, PUBKEY_VAULT]
+      register: update2
+
+    - name: Assert the options were kept
+      ansible.builtin.assert:
+        that:
+          - update2 is changed
+          - update2.changed_fields == ['authentication_methods', 'description']
+          - update2.connection_policy.authentication_methods | sort == ['PASSWORD_VAULT', 'PUBKEY_VAULT']
+          - update2.connection_policy.options.trace.log_all_kbd == true
+          - update2.connection_policy.options.session.inactivity_timeout == 600
+
+    - name: Try to change the protocol
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        protocol: RDP
+      register: change_protocol
+      ignore_errors: true
+
+    - name: Assert the protocol cannot be changed
+      ansible.builtin.assert:
+        that:
+          - change_protocol is failed
+          - "'cannot be changed after creation' in change_protocol.msg"
+
+    - name: Delete connection policy
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        state: absent
+      register: delete
+
+    - name: Delete connection policy again
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up connection policy after delete
+      wallix.bastion.connection_policy_info:
+        connection_policy_name: "{{ test_policy }}"
+      register: after_delete
+
+    - name: Look up a built-in connection policy
+      wallix.bastion.connection_policy_info:
+        connection_policy_name: SSH
+      register: builtin
+
+    - name: Assert connection policy is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.connection_policies | length == 0
+          - builtin.connection_policies | length == 1
+          - builtin.connection_policies[0].is_default
+
+  always:
+    - name: Clean up test connection policy
+      wallix.bastion.connection_policy:
+        connection_policy_name: "{{ test_policy }}"
+        state: absent

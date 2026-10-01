@@ -1,0 +1,5 @@
+---
+release_summary: >-
+  First release of wallix.bastion, a rewrite of wallix.pam modeled on the
+  wallix-bastion Terraform provider: one idempotent module per Bastion API object,
+  with check mode and diff support.

@@ -1,0 +1,166 @@
+---
+# Full lifecycle of wallix.bastion.timeframe against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test timeframe name
+  ansible.builtin.set_fact:
+    test_timeframe: ansible-test-timeframe-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    office_hours:
+      start_date: "2026-01-01"
+      end_date: "2026-12-31"
+      start_time: "08:00"
+      end_time: "18:00"
+      week_days: [friday, monday, wednesday]
+    sunday_slot:
+      start_date: "2026-02-01"
+      end_date: "2026-03-31"
+      start_time: "09:00"
+      end_time: "10:00"
+      week_days: [sunday]
+
+- name: Timeframe lifecycle
+  block:
+    - name: Create timeframe (check mode)
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        description: Created by the wallix.bastion integration tests
+        periods: ["{{ office_hours }}", "{{ sunday_slot }}"]
+      check_mode: true
+      register: create_check
+
+    - name: Look up timeframe after check mode
+      wallix.bastion.timeframe_info:
+        timeframe_name: "{{ test_timeframe }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.timeframes | length == 0
+
+    - name: Create timeframe
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        description: Created by the wallix.bastion integration tests
+        periods: ["{{ office_hours }}", "{{ sunday_slot }}"]
+      register: create
+
+    - name: Assert timeframe was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.timeframe.id | length > 0
+          - create.timeframe.periods | length == 2
+          - create.timeframe.is_overtimable == false
+
+    - name: Create timeframe again, periods and week days in another order
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        description: Created by the wallix.bastion integration tests
+        periods:
+          - "{{ sunday_slot }}"
+          - "{{ office_hours | combine({'week_days': ['wednesday', 'friday', 'monday']}) }}"
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.timeframe.id == create.timeframe.id
+
+    - name: Update one option
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        is_overtimable: true
+      diff: true
+      register: update
+
+    - name: Assert only is_overtimable changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['is_overtimable']
+          - update.timeframe.is_overtimable == true
+          - update.timeframe.description == 'Created by the wallix.bastion integration tests'
+          - update.timeframe.periods | length == 2
+          - update.diff.before.is_overtimable != update.diff.after.is_overtimable
+
+    - name: Replace the periods
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        periods: ["{{ sunday_slot }}"]
+      register: replace
+
+    - name: Assert periods were replaced
+      ansible.builtin.assert:
+        that:
+          - replace is changed
+          - replace.changed_fields == ['periods']
+          - replace.timeframe.periods == [sunday_slot]
+
+    - name: Remove all periods
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        periods: []
+      register: clear
+
+    - name: Remove all periods again
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        periods: []
+      register: clear_again
+
+    - name: Assert periods were removed
+      ansible.builtin.assert:
+        that:
+          - clear is changed
+          - clear.timeframe.periods == []
+          - clear_again is not changed
+
+    - name: Invalid time format
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        periods: ["{{ sunday_slot | combine({'start_time': '9:00'}) }}"]
+      register: invalid
+      ignore_errors: true
+
+    - name: Assert invalid time is refused
+      ansible.builtin.assert:
+        that:
+          - invalid is failed
+          - "'hh:mm' in invalid.msg"
+
+    - name: Delete timeframe
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        state: absent
+      register: delete
+
+    - name: Delete timeframe again
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up timeframe after delete
+      wallix.bastion.timeframe_info:
+        timeframe_name: "{{ test_timeframe }}"
+      register: after_delete
+
+    - name: List all timeframes
+      wallix.bastion.timeframe_info:
+      register: all_timeframes
+
+    - name: Assert timeframe is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.timeframes | length == 0
+          - all_timeframes.timeframes | length >= 1
+
+  always:
+    - name: Clean up test timeframe
+      wallix.bastion.timeframe:
+        timeframe_name: "{{ test_timeframe }}"
+        state: absent

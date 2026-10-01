@@ -1,0 +1,161 @@
+---
+# Full lifecycle of wallix.bastion.device_localdomain_account_credential against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick unique test names and a throwaway password
+  ansible.builtin.set_fact:
+    test_device: ansible-test-credential-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-root
+    test_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=20, chars=['ascii_letters', 'digits']) }}-Aa1"
+  no_log: true
+
+- name: Device local domain account credential lifecycle
+  module_defaults:
+    wallix.bastion.device_localdomain_account_credential:
+      device_name: "{{ test_device }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+    wallix.bastion.device_localdomain_account_credential_info:
+      device_name: "{{ test_device }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+  block:
+    - name: Create parent device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.23
+
+    - name: Create parent local domain
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+
+    - name: Create parent account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: root
+
+    - name: Create password (check mode)
+      wallix.bastion.device_localdomain_account_credential:
+        type: password
+        password: "{{ test_password }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up credentials after check mode
+      wallix.bastion.device_localdomain_account_credential_info:
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.credentials | length == 0
+
+    - name: Create password
+      wallix.bastion.device_localdomain_account_credential:
+        type: password
+        password: "{{ test_password }}"
+      register: create
+
+    - name: Assert password was created and is not returned
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.credential.id | length > 0
+          - create.credential.type == 'password'
+          - create.credential.password is not defined
+
+    - name: Create password again with another value
+      wallix.bastion.device_localdomain_account_credential:
+        type: password
+        password: "{{ test_password }}-other"
+      register: create_again
+
+    - name: Assert the password is only sent on creation by default
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.credential.id == create.credential.id
+
+    - name: Replace the password
+      wallix.bastion.device_localdomain_account_credential:
+        type: password
+        password: "{{ test_password }}-new"
+        update_password: always
+      register: replace
+
+    - name: Assert the password was replaced in place
+      ansible.builtin.assert:
+        that:
+          - replace is changed
+          - replace.changed_fields == ['password']
+          - replace.credential.id == create.credential.id
+
+    - name: Generate an SSH key
+      wallix.bastion.device_localdomain_account_credential:
+        type: ssh_key
+        private_key: generate:ED25519
+      register: key
+
+    - name: Generate an SSH key again
+      wallix.bastion.device_localdomain_account_credential:
+        type: ssh_key
+        private_key: generate:ED25519
+      register: key_again
+
+    - name: Get the SSH key
+      wallix.bastion.device_localdomain_account_credential_info:
+        type: ssh_key
+      register: key_info
+
+    - name: Assert one SSH key was generated and its public key is returned
+      ansible.builtin.assert:
+        that:
+          - key is changed
+          - key.credential.public_key | length > 0
+          - key.credential.private_key is not defined
+          - key_again is not changed
+          - key_again.credential.public_key == key.credential.public_key
+          - key_info.credentials | length == 1
+          - key_info.credentials[0].public_key == key.credential.public_key
+          - key_info.credentials[0].private_key is not defined
+
+    - name: Delete the SSH key
+      wallix.bastion.device_localdomain_account_credential:
+        type: ssh_key
+        state: absent
+      register: delete
+
+    - name: Delete the SSH key again
+      wallix.bastion.device_localdomain_account_credential:
+        type: ssh_key
+        state: absent
+      register: delete_again
+
+    - name: List the credentials after delete
+      wallix.bastion.device_localdomain_account_credential_info:
+      register: after_delete
+
+    - name: Assert only the SSH key is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.credentials | map(attribute='type') | list == ['password']
+
+  always:
+    # The Bastion refuses to delete a device that still has accounts; credentials go with the account.
+    - name: Clean up test account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Clean up test device and its local domains
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

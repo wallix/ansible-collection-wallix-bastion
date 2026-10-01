@@ -1,0 +1,180 @@
+---
+# Full lifecycle of wallix.bastion.device_service against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test device name
+  ansible.builtin.set_fact:
+    test_device: ansible-test-service-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Device service lifecycle
+  block:
+    - name: Create parent device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.20
+
+    - name: Create service (check mode)
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        connection_policy: SSH
+        protocol: SSH
+        port: 22
+        subprotocols: [SSH_SHELL_SESSION, SSH_SCP_UP, SSH_SCP_DOWN]
+      check_mode: true
+      register: create_check
+
+    - name: Look up service after check mode
+      wallix.bastion.device_service_info:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.services | length == 0
+
+    - name: Create service
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        connection_policy: SSH
+        protocol: SSH
+        port: 22
+        subprotocols: [SSH_SHELL_SESSION, SSH_SCP_UP, SSH_SCP_DOWN]
+      register: create
+
+    - name: Assert service was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.service.id | length > 0
+          - create.service.port == 22
+          - create.service.subprotocols | length == 3
+
+    - name: Create service again, subprotocols in another order
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        connection_policy: SSH
+        protocol: SSH
+        port: 22
+        subprotocols: [SSH_SCP_DOWN, SSH_SHELL_SESSION, SSH_SCP_UP]
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.service.id == create.service.id
+
+    - name: Update the port only
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        port: 2222
+      diff: true
+      register: update
+
+    - name: Assert only the port changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['port']
+          - update.service.port == 2222
+          - update.service.connection_policy == 'SSH'
+          - update.service.subprotocols | length == 3
+          - update.diff.before.port == 22
+
+    - name: Remove a subprotocol
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        subprotocols: [SSH_SHELL_SESSION]
+      register: shrink
+
+    - name: Assert the list was replaced, not merged
+      ansible.builtin.assert:
+        that:
+          - shrink is changed
+          - shrink.service.subprotocols == ['SSH_SHELL_SESSION']
+
+    - name: Try to change the protocol
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        protocol: TELNET
+      register: change_protocol
+      ignore_errors: true
+
+    - name: Assert protocol is create-only
+      ansible.builtin.assert:
+        that:
+          - change_protocol is failed
+          - "'protocol cannot be changed' in change_protocol.msg"
+
+    - name: Create a raw TCP service
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: TCP8080
+        connection_policy: RAWTCPIP
+        protocol: RAWTCPIP
+        port: 8080
+      register: tcp
+
+    - name: List the services of the device
+      wallix.bastion.device_service_info:
+        device_name: "{{ test_device }}"
+      register: all_services
+
+    - name: Assert both services are listed
+      ansible.builtin.assert:
+        that:
+          - tcp is changed
+          - all_services.services | map(attribute='service_name') | sort == ['SSH', 'TCP8080']
+
+    - name: Delete service
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        state: absent
+      register: delete
+
+    - name: Delete service again
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        state: absent
+      register: delete_again
+
+    - name: Look up service after delete
+      wallix.bastion.device_service_info:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+      register: after_delete
+
+    - name: Assert service is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.services | length == 0
+
+  always:
+    - name: Clean up test device and its services
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent
+
+    - name: Delete a service of a missing device
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: SSH
+        state: absent
+      register: orphan
+
+    - name: Assert a missing device is not an error with state=absent
+      ansible.builtin.assert:
+        that:
+          - orphan is not changed

@@ -1,0 +1,171 @@
+---
+# Full lifecycle of wallix.bastion.domain_account against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test domain name
+  ansible.builtin.set_fact:
+    test_domain: ansible-test-dacc-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_account: ansible-test-account
+
+- name: Domain account lifecycle
+  block:
+    - name: Create account in a missing domain
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+      register: no_domain
+      ignore_errors: true
+
+    - name: Delete account in a missing domain
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+      register: no_domain_absent
+
+    - name: Assert a missing domain fails, unless deleting
+      ansible.builtin.assert:
+        that:
+          - no_domain is failed
+          - no_domain.msg == 'domain ' ~ test_domain ~ ' does not exist'
+          - no_domain_absent is not changed
+
+    - name: Create the parent domain with an SSH CA
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        ca_private_key: generate:ED25519
+
+    - name: Create account (check mode)
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+        description: Created by the wallix.bastion integration tests
+        auto_change_password: false
+      check_mode: true
+      register: create_check
+
+    - name: Look up account after check mode
+      wallix.bastion.domain_account_info:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.domain_accounts | length == 0
+
+    - name: Create account
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+        description: Created by the wallix.bastion integration tests
+        auto_change_password: false
+      register: create
+
+    - name: Assert account was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.domain_account.id | length > 0
+          - create.domain_account.account_login == 'admin'
+          - create.domain_account.checkout_policy == 'default'
+          - not create.domain_account.auto_change_password
+          - create.domain_account.resources == []
+
+    - name: Create account again
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+        description: Created by the wallix.bastion integration tests
+        auto_change_password: false
+        checkout_policy: default
+        resources: []
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.domain_account.id == create.domain_account.id
+
+    - name: Update two options
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: root
+        certificate_validity: +2h
+      diff: true
+      register: update
+
+    - name: Assert only those options changed and the others were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['account_login', 'certificate_validity']
+          - update.domain_account.account_login == 'root'
+          - update.domain_account.certificate_validity == '+2h'
+          - update.domain_account.description == 'Created by the wallix.bastion integration tests'
+          - not update.domain_account.auto_change_password
+          - update.diff.before.account_login == 'admin'
+
+    - name: Use a malformed resource
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        resources: [no-service]
+      register: bad_resource
+      ignore_errors: true
+
+    - name: Assert the malformed resource was refused
+      ansible.builtin.assert:
+        that:
+          - bad_resource is failed
+          - "'resources must be' in bad_resource.msg"
+
+    - name: List the accounts of the domain
+      wallix.bastion.domain_account_info:
+        domain_name: "{{ test_domain }}"
+      register: all_accounts
+
+    - name: Assert the account is listed
+      ansible.builtin.assert:
+        that:
+          - all_accounts.domain_accounts | map(attribute='account_name') | list == [test_account]
+
+    - name: Delete account
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+      register: delete
+
+    - name: Delete account again
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up account after delete
+      wallix.bastion.domain_account_info:
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+      register: after_delete
+
+    - name: Assert account is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.domain_accounts | length == 0
+
+  always:
+    - name: Clean up test domain and its accounts
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        state: absent

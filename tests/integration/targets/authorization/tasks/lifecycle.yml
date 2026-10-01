@@ -1,0 +1,260 @@
+---
+# Full lifecycle of wallix.bastion.authorization against a real Bastion.
+# Connection comes from main.yml (module_defaults). The user groups and the (empty) target group
+# are created with wallix.bastion.usergroup and wallix.bastion.targetgroup.
+- name: Pick a unique test suffix
+  ansible.builtin.set_fact:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_authorization: ansible-test-auth-{{ test_suffix }}
+    test_users_group: ansible-test-authug-{{ test_suffix }}
+    test_approvers_group: ansible-test-authap-{{ test_suffix }}
+    test_target_group: ansible-test-authtg-{{ test_suffix }}
+    test_other_target_group: ansible-test-authtg2-{{ test_suffix }}
+
+- name: Authorization lifecycle
+  block:
+    - name: Create the user groups
+      wallix.bastion.usergroup:
+        group_name: "{{ item }}"
+        timeframes: [allthetime]
+      loop: ["{{ test_users_group }}", "{{ test_approvers_group }}"]
+
+    - name: Create the target groups
+      wallix.bastion.targetgroup:
+        group_name: "{{ item }}"
+      loop: ["{{ test_target_group }}", "{{ test_other_target_group }}"]
+
+    - name: Create authorization without its target group
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        user_group: "{{ test_users_group }}"
+      register: no_target
+      ignore_errors: true
+
+    - name: Create authorization (check mode)
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        user_group: "{{ test_users_group }}"
+        target_group: "{{ test_target_group }}"
+        description: Created by the wallix.bastion integration tests
+        authorize_sessions: true
+        authorize_password_retrieval: false
+        subprotocols: [SSH_SHELL_SESSION, SSH_SCP_UP]
+        is_recorded: true
+      check_mode: true
+      register: create_check
+
+    - name: Look up authorization after check mode
+      wallix.bastion.authorization_info:
+        authorization_name: "{{ test_authorization }}"
+      register: after_check
+
+    - name: Assert the missing target group failed and check mode made no change
+      ansible.builtin.assert:
+        that:
+          - no_target is failed
+          - "'target_group required' in no_target.msg"
+          - create_check is changed
+          - after_check.authorizations | length == 0
+
+    - name: Create authorization
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        user_group: "{{ test_users_group }}"
+        target_group: "{{ test_target_group }}"
+        description: Created by the wallix.bastion integration tests
+        authorize_sessions: true
+        authorize_password_retrieval: false
+        subprotocols: [SSH_SHELL_SESSION, SSH_SCP_UP]
+        is_recorded: true
+      register: create
+
+    - name: Assert authorization was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.authorization.id | length > 0
+          - create.authorization.user_group == test_users_group
+          - create.authorization.target_group == test_target_group
+          - create.authorization.authorize_sessions
+          - not create.authorization.authorize_password_retrieval
+          - create.authorization.subprotocols | sort == ['SSH_SCP_UP', 'SSH_SHELL_SESSION']
+          - create.authorization.is_recorded
+          - not create.authorization.approval_required
+
+    - name: Create authorization again, subprotocols reordered
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        user_group: "{{ test_users_group }}"
+        target_group: "{{ test_target_group }}"
+        description: Created by the wallix.bastion integration tests
+        authorize_sessions: true
+        authorize_password_retrieval: false
+        subprotocols: [SSH_SCP_UP, SSH_SHELL_SESSION]
+        is_recorded: true
+      register: create_again
+
+    - name: Create a second authorization for the same groups
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}-dup"
+        user_group: "{{ test_users_group }}"
+        target_group: "{{ test_target_group }}"
+        subprotocols: [SSH_SHELL_SESSION]
+      register: duplicate
+      ignore_errors: true
+
+    - name: Move authorization to another target group
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        target_group: "{{ test_other_target_group }}"
+      register: move
+      ignore_errors: true
+
+    - name: Assert re-run is a no-op, the pair is unique and the groups cannot change
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.authorization.id == create.authorization.id
+          - duplicate is failed
+          - duplicate.status == 409
+          - move is failed
+          - "'target_group cannot be changed' in move.msg"
+
+    - name: Remove a subprotocol
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        subprotocols: [SSH_SHELL_SESSION]
+      diff: true
+      register: remove_subprotocol
+
+    - name: Assert the subprotocol was removed and the rest kept
+      ansible.builtin.assert:
+        that:
+          - remove_subprotocol is changed
+          - remove_subprotocol.changed_fields == ['subprotocols']
+          - remove_subprotocol.authorization.subprotocols == ['SSH_SHELL_SESSION']
+          - remove_subprotocol.diff.before.subprotocols | length == 2
+          - remove_subprotocol.authorization.is_recorded
+          - not remove_subprotocol.authorization.authorize_password_retrieval
+          - remove_subprotocol.authorization.description == 'Created by the wallix.bastion integration tests'
+
+    - name: Require approval
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        approval_required: true
+        approvers: ["{{ test_approvers_group }}"]
+        active_quorum: 1
+        inactive_quorum: 1
+        approval_timeout: 30
+        has_comment: true
+        mandatory_comment: true
+      register: approval
+
+    - name: Require approval again
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        approval_required: true
+        approvers: ["{{ test_approvers_group }}"]
+        active_quorum: 1
+        inactive_quorum: 1
+        approval_timeout: 30
+        has_comment: true
+        mandatory_comment: true
+      register: approval_again
+
+    - name: Replace the approvers
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        approvers: ["{{ test_users_group }}"]
+      register: approvers
+
+    - name: Assert approval settings were applied and approvers replaced
+      ansible.builtin.assert:
+        that:
+          - approval is changed
+          - approval.authorization.approval_required
+          - approval.authorization.approvers == [test_approvers_group]
+          - approval.authorization.active_quorum == 1
+          - approval.authorization.inactive_quorum == 1
+          - approval.authorization.approval_timeout == 30
+          - approval.authorization.mandatory_comment
+          - approval_again is not changed
+          - approvers is changed
+          - approvers.authorization.approvers == [test_users_group]
+          - approvers.authorization.active_quorum == 1
+
+    - name: Share sessions and switch to password retrieval only
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        authorize_session_sharing: true
+        session_sharing_mode: view_only
+        authorize_sessions: false
+        authorize_password_retrieval: true
+      register: sharing
+
+    - name: Drop the approval
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        approval_required: false
+      register: no_approval
+
+    - name: Assert sharing and access mode were changed, approval settings reset
+      ansible.builtin.assert:
+        that:
+          - sharing is changed
+          - sharing.changed_fields | sort == ['authorize_password_retrieval', 'authorize_session_sharing',
+                                               'authorize_sessions', 'session_sharing_mode']
+          - sharing.authorization.session_sharing_mode == 'view_only'
+          - not sharing.authorization.authorize_sessions
+          - sharing.authorization.authorize_password_retrieval
+          - sharing.authorization.subprotocols == ['SSH_SHELL_SESSION']
+          - no_approval is changed
+          - not no_approval.authorization.approval_required
+          - no_approval.authorization.approvers == []
+          - no_approval.authorization.is_recorded
+
+    - name: Delete authorization
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        state: absent
+      register: delete
+
+    - name: Delete authorization again
+      wallix.bastion.authorization:
+        authorization_name: "{{ test_authorization }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up authorization after delete
+      wallix.bastion.authorization_info:
+        authorization_name: "{{ test_authorization }}"
+      register: after_delete
+
+    - name: Assert authorization is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.authorizations | length == 0
+
+  always:
+    - name: Clean up test authorizations
+      wallix.bastion.authorization:
+        authorization_name: "{{ item }}"
+        state: absent
+      loop: ["{{ test_authorization }}", "{{ test_authorization }}-dup"]
+
+    - name: Clean up test target groups
+      wallix.bastion.targetgroup:
+        group_name: "{{ item }}"
+        state: absent
+      loop: ["{{ test_target_group }}", "{{ test_other_target_group }}"]
+
+    - name: Clean up test user groups
+      wallix.bastion.usergroup:
+        group_name: "{{ item }}"
+        state: absent
+      loop: ["{{ test_users_group }}", "{{ test_approvers_group }}"]

@@ -1,0 +1,180 @@
+---
+# Full lifecycle of wallix.bastion.user against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test user name and password
+  ansible.builtin.set_fact:
+    test_user: ansible-test-user-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_password: Aa1-{{ lookup('ansible.builtin.password', '/dev/null', length=16, chars=['ascii_letters', 'digits']) }}
+    test_key_1: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG51Jr8d9zidRxHe6udWCu1DmkRg6l9VxU4YcR8jE6J9 ansible-test-1
+    test_key_2: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIICnE49uiRrh/i3MWlECafH3uBZlTyFUITRt3l8yJB+ ansible-test-2
+  no_log: true
+
+- name: User lifecycle
+  block:
+    - name: Create user (check mode)
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        email: ansible-test@example.com
+        profile: user
+        user_auths: [local_password, local_sshkey]
+        display_name: Created by the wallix.bastion integration tests
+        password: "{{ test_password }}"
+        ssh_public_key: "{{ test_key_1 }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up user after check mode
+      wallix.bastion.user_info:
+        user_name: "{{ test_user }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.users | length == 0
+
+    - name: Create user
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        email: ansible-test@example.com
+        profile: user
+        user_auths: [local_password, local_sshkey]
+        display_name: Created by the wallix.bastion integration tests
+        password: "{{ test_password }}"
+        ssh_public_key: "{{ test_key_1 }}"
+      register: create
+
+    - name: Assert user was created without returning the password
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.user.user_name == test_user
+          - create.user.email == 'ansible-test@example.com'
+          - create.user.ssh_public_key == test_key_1
+          - "'password' not in create.user"
+
+    - name: Create user again, password unchanged (update_password=on_create)
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        email: ansible-test@example.com
+        profile: user
+        user_auths: [local_sshkey, local_password]
+        display_name: Created by the wallix.bastion integration tests
+        password: "{{ test_password }}-other"
+        ssh_public_key: "{{ test_key_1 }}"
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.changed_fields == []
+
+    - name: Look up user with another case
+      wallix.bastion.user_info:
+        user_name: "{{ test_user | upper }}"
+      register: upper_info
+
+    - name: Manage user with another case
+      wallix.bastion.user:
+        user_name: "{{ test_user | upper }}"
+        email: ansible-test@example.com
+      register: upper_manage
+
+    - name: Assert user names are case-insensitive
+      ansible.builtin.assert:
+        that:
+          - upper_info.users | length == 1
+          - upper_info.users[0].user_name == test_user
+          - "'password' not in upper_info.users[0]"
+          - upper_manage is not changed
+
+    - name: Set two SSH keys and disable the user
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        ssh_public_key: "{{ test_key_1 }}\n{{ test_key_2 }}"
+        is_disabled: true
+      diff: true
+      register: update
+
+    - name: Assert only those options changed and others were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['is_disabled', 'ssh_public_key']
+          - update.user.ssh_public_key.splitlines() == [test_key_1, test_key_2]
+          - update.user.is_disabled
+          - update.user.display_name == 'Created by the wallix.bastion integration tests'
+          - update.user.user_auths | sort == ['local_password', 'local_sshkey']
+          - update.diff.before.is_disabled != update.diff.after.is_disabled
+
+    - name: Set the same SSH keys again
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        ssh_public_key: "{{ test_key_1 }}\n{{ test_key_2 }}"
+      register: keys_again
+
+    - name: Change the password (update_password=always)
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        password: "{{ test_password }}-new"
+        update_password: always
+      register: new_password
+
+    - name: Assert keys are idempotent and password update is reported
+      ansible.builtin.assert:
+        that:
+          - keys_again is not changed
+          - new_password is changed
+          - new_password.changed_fields == ['password']
+
+    - name: Change several options at once
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        preferred_language: fr
+        force_change_pwd: true
+        expiration_date: "2099-12-31 23:59"
+        ip_source: 192.0.2.0/24
+        is_disabled: false
+      register: multi
+
+    - name: Assert all options were applied
+      ansible.builtin.assert:
+        that:
+          - multi is changed
+          - multi.changed_fields | sort == ['expiration_date', 'force_change_pwd', 'ip_source', 'is_disabled', 'preferred_language']
+          - multi.user.preferred_language == 'fr'
+          - multi.user.force_change_pwd
+          - multi.user.expiration_date == '2099-12-31 23:59'
+          - multi.user.ip_source == '192.0.2.0/24'
+
+    - name: Delete user
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        state: absent
+      register: delete
+
+    - name: Delete user again
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up user after delete
+      wallix.bastion.user_info:
+        user_name: "{{ test_user }}"
+      register: after_delete
+
+    - name: Assert user is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.users | length == 0
+
+  always:
+    - name: Clean up test user
+      wallix.bastion.user:
+        user_name: "{{ test_user }}"
+        state: absent

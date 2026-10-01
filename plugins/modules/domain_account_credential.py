@@ -1,0 +1,234 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+# Copyright (c) 2026, WALLIX
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+DOCUMENTATION = r"""
+module: domain_account_credential
+short_description: Manage credentials of global domain accounts on a WALLIX Bastion
+version_added: 1.0.0
+description:
+  - Create, update or delete the password or the SSH key of an account of a global domain on a WALLIX Bastion.
+  - Equivalent of the C(wallix-bastion_domain_account_credential) Terraform resource.
+  - An account has at most one credential of each O(type), so O(type) identifies the credential.
+author:
+  - WALLIX (@wallix)
+extends_documentation_fragment:
+  - wallix.bastion.connection
+attributes:
+  check_mode:
+    description: Can run in check_mode and return changed status prediction without modifying target.
+    support: full
+  diff_mode:
+    description: Will return details on what has changed (or possibly needs changing in check_mode), when in diff mode.
+    support: full
+    details: Secret options never appear in the diff.
+options:
+  domain_name:
+    description:
+      - Name of the global domain of the account (see M(wallix.bastion.domain)).
+    type: str
+    required: true
+  account_name:
+    description:
+      - Name of the account (see M(wallix.bastion.domain_account)).
+      - The domain and the account must exist, unless O(state=absent).
+    type: str
+    required: true
+  type:
+    description:
+      - Type of the credential. Identifies the credential of the account.
+    type: str
+    choices: [password, ssh_key]
+    required: true
+  password:
+    description:
+      - The password, for O(type=password).
+      - Required when the credential does not exist yet. The Bastion never returns it, so it cannot be compared.
+        See O(update_password).
+    type: str
+  private_key:
+    description:
+      - The private key, for O(type=ssh_key), or V(generate:<TYPE>) to let the Bastion generate one,
+        for example V(generate:RSA_4096) or V(generate:ED25519).
+      - Required when the credential does not exist yet.
+      - The Bastion never returns it, so it cannot be compared. See O(update_password).
+    type: str
+  passphrase:
+    description:
+      - Passphrase protecting O(private_key), for O(type=ssh_key).
+      - The Bastion never returns it, so it cannot be compared. It can only be changed together with
+        O(private_key).
+    type: str
+  propagate_credential_change:
+    description:
+      - When the password is sent, also have the Bastion change it on the target accounts.
+      - Needs password change enabled on the domain (see O(wallix.bastion.domain#module:enable_password_change)).
+      - On update, the password is then only changed through the password change of the domain.
+    type: bool
+    default: false
+  update_password:
+    description:
+      - V(on_create) sends the secret options only when the credential is created.
+      - V(always) sends them on every run, which then always reports a change. With O(type=ssh_key),
+        the key of the existing credential is replaced in place; with V(generate:<TYPE>), a new key is
+        generated on every run.
+    type: str
+    choices: [always, on_create]
+    default: on_create
+  state:
+    description:
+      - Whether the credential should exist.
+    type: str
+    choices: [present, absent]
+    default: present
+"""
+
+EXAMPLES = r"""
+- name: Set the password of a domain account
+  wallix.bastion.domain_account_credential:
+    domain_name: corp
+    account_name: administrator
+    type: password
+    password: "{{ vault_admin_password }}"
+
+- name: Rotate it on every run
+  wallix.bastion.domain_account_credential:
+    domain_name: corp
+    account_name: administrator
+    type: password
+    password: "{{ vault_admin_password }}"
+    update_password: always
+
+- name: Let the Bastion generate an SSH key for the account
+  wallix.bastion.domain_account_credential:
+    domain_name: corp
+    account_name: administrator
+    type: ssh_key
+    private_key: generate:ED25519
+  register: key
+
+- name: Show its public key
+  ansible.builtin.debug:
+    msg: "{{ key.domain_account_credential.public_key }}"
+
+- name: Remove the SSH key
+  wallix.bastion.domain_account_credential:
+    domain_name: corp
+    account_name: administrator
+    type: ssh_key
+    state: absent
+"""
+
+RETURN = r"""
+domain_account_credential:
+  description:
+    - The credential as returned by the Bastion API after the change, without the secret options.
+    - In check mode, the expected credential. V(null) when O(state=absent).
+  returned: always
+  type: dict
+  sample:
+    id: 1a0f6dc16d3a14b2005056b66c8b
+    type: ssh_key
+    key_id: 22c471209dbc471483ba6f69de380be7
+    public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAm8... Generated by WALLIX Bastion\n"
+    url: https://bastion.example.com/api/v3.12/domains/1a0f6d.../accounts/1a0f6d.../credentials/1a0f6dc16d3a14b2005056b66c8b
+changed_fields:
+  description: Secret options sent to the Bastion, with O(update_password=always).
+  returned: when the credential already existed and O(state=present)
+  type: list
+  elements: str
+  sample: [password]
+"""
+
+from ansible_collections.wallix.bastion.plugins.module_utils.resource import (
+    BastionModule,
+    BastionResource,
+    find_parent,
+)
+
+SECRETS = ("password", "private_key", "passphrase")
+
+
+class CredentialResource(BastionResource):
+    """Credential of an account, identified by its type. The API has no q= search on credentials."""
+
+    def __init__(self, module, account_id, **kwargs):
+        super(CredentialResource, self).__init__(module, **kwargs)
+        self.account_id = account_id
+        self.propagate = module.params["propagate_credential_change"]
+
+    def _propagate(self, password):
+        self.client.call("PUT", "accountchangepassword/%s/password" % self.account_id, {"password": password})
+
+    def create(self, desired):
+        created = super(CredentialResource, self).create(desired)
+        if self.propagate and desired.get("password"):
+            self._propagate(desired["password"])
+        return created
+
+    def update(self, current, desired):
+        if self.propagate and "password" in desired:
+            self._propagate(desired["password"])
+            return self.normalize(self.client.get(self.object_path(current["id"])))
+        # PUT requires type; a new private_key replaces the key in place.
+        return super(CredentialResource, self).update(current, desired)
+
+
+def main():
+    module = BastionModule(
+        argument_spec=dict(
+            domain_name=dict(type="str", required=True),
+            account_name=dict(type="str", required=True),
+            type=dict(type="str", choices=["password", "ssh_key"], required=True),
+            password=dict(type="str", no_log=True),
+            private_key=dict(type="str", no_log=True),
+            passphrase=dict(type="str", no_log=True),
+            propagate_credential_change=dict(type="bool", default=False),
+            update_password=dict(type="str", choices=["always", "on_create"], default="on_create", no_log=False),
+            state=dict(type="str", choices=["present", "absent"], default="present"),
+        ),
+        required_by=dict(passphrase="private_key"),
+        supports_check_mode=True,
+    )
+    params = module.params
+    if params["type"] == "password":
+        wrong = [f for f in ("private_key", "passphrase") if params[f] is not None]
+    else:
+        wrong = [f for f in ("password",) if params[f] is not None]
+        if params["propagate_credential_change"]:
+            wrong.append("propagate_credential_change")
+    if wrong:
+        module.fail_json(msg="%s cannot be used with type=%s" % (", ".join(wrong), params["type"]))
+
+    domain_id = find_parent(module, "domains", "domain_name", params["domain_name"], label="domain")
+    account_id = None
+    if domain_id is not None:
+        account_id = find_parent(module, "domains/%s/accounts" % domain_id, "account_name", params["account_name"],
+                                 label="account")
+    if account_id is None:
+        module.exit_json(changed=False, domain_account_credential=None, diff=dict(before={}, after={}))
+
+    resource = CredentialResource(
+        module,
+        account_id,
+        path="domains/%s/accounts/%s/credentials" % (domain_id, account_id),
+        name_field="type",
+        search="list",
+        fields=("type",) + SECRETS,
+        result_key="domain_account_credential",
+        required_on_create=("password",) if params["type"] == "password" else ("private_key",),
+        create_only_fields=("type",),
+        secret_fields=SECRETS,
+        update_secrets=params["update_password"] == "always",
+    )
+    resource.ensure(params["state"])
+
+
+if __name__ == "__main__":
+    main()

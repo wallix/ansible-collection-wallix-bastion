@@ -1,0 +1,124 @@
+---
+# Full lifecycle of wallix.bastion.device against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test device name
+  ansible.builtin.set_fact:
+    test_device: ansible-test-device-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Device lifecycle
+  block:
+    - name: Create device (check mode)
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.10
+        description: Created by the wallix.bastion integration tests
+        tags:
+          - {key: env, value: test}
+          - {key: owner, value: ansible}
+      check_mode: true
+      register: create_check
+
+    - name: Look up device after check mode
+      wallix.bastion.device_info:
+        device_name: "{{ test_device }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.devices | length == 0
+
+    - name: Create device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.10
+        description: Created by the wallix.bastion integration tests
+        tags:
+          - {key: env, value: test}
+          - {key: owner, value: ansible}
+      register: create
+
+    - name: Assert device was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.device.id | length > 0
+          - create.device.host == '192.0.2.10'
+
+    - name: Create device again
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.10
+        description: Created by the wallix.bastion integration tests
+        tags:
+          - {key: env, value: test}
+          - {key: owner, value: ansible}
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.device.id == create.device.id
+
+    - name: Reorder tags only
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        tags:
+          - {key: owner, value: ansible}
+          - {key: env, value: test}
+      register: reorder
+
+    - name: Assert tag order is not a change
+      ansible.builtin.assert:
+        that:
+          - reorder is not changed
+
+    - name: Update one option
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        alias: updated-alias
+      diff: true
+      register: update
+
+    - name: Assert only the alias changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['alias']
+          - update.device.alias == 'updated-alias'
+          - update.device.host == '192.0.2.10'
+          - update.device.description == 'Created by the wallix.bastion integration tests'
+          - update.device.tags | length == 2
+          - update.diff.before.alias != update.diff.after.alias
+
+    - name: Delete device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent
+      register: delete
+
+    - name: Delete device again
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up device after delete
+      wallix.bastion.device_info:
+        device_name: "{{ test_device }}"
+      register: after_delete
+
+    - name: Assert device is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.devices | length == 0
+
+  always:
+    - name: Clean up test device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

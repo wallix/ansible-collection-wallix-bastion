@@ -1,0 +1,192 @@
+---
+# Full lifecycle of wallix.bastion.device_localdomain_account against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test device name
+  ansible.builtin.set_fact:
+    test_device: ansible-test-account-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-root
+
+- name: Device local domain account lifecycle
+  block:
+    - name: Create parent device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.22
+
+    - name: Create services of the device
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: "{{ item }}"
+        connection_policy: SSH
+        protocol: SSH
+        port: 22
+        subprotocols: [SSH_SHELL_SESSION]
+      loop: [SSH, SSH2]
+
+    - name: Create parent local domain
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+
+    - name: Create account (check mode)
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: root
+        services: [SSH, SSH2]
+      check_mode: true
+      register: create_check
+
+    - name: Look up account after check mode
+      wallix.bastion.device_localdomain_account_info:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.accounts | length == 0
+
+    - name: Create account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: root
+        description: Created by the wallix.bastion integration tests
+        services: [SSH, SSH2]
+      register: create
+
+    - name: Assert account was created with the default checkout policy
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.account.id | length > 0
+          - create.account.account_login == 'root'
+          - create.account.checkout_policy == 'default'
+          - create.account.services | sort == ['SSH', 'SSH2']
+
+    - name: Create account again, services in another order
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: root
+        description: Created by the wallix.bastion integration tests
+        services: [SSH2, SSH]
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.account.id == create.account.id
+
+    - name: Update one option
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        auto_change_password: false
+      diff: true
+      register: update
+
+    - name: Assert only auto_change_password changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['auto_change_password']
+          - not update.account.auto_change_password
+          - update.account.description == 'Created by the wallix.bastion integration tests'
+          - update.account.services | length == 2
+          - update.diff.before.auto_change_password
+
+    - name: Remove a service and set a certificate validity
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        services: [SSH]
+        certificate_validity: +1w2d
+      register: shrink
+
+    - name: Assert the services were replaced, not merged
+      ansible.builtin.assert:
+        that:
+          - shrink is changed
+          - shrink.account.services == ['SSH']
+          - shrink.account.certificate_validity == '+1w2d'
+
+    - name: Remove all services
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        services: []
+      register: empty
+
+    - name: Assert the services were emptied
+      ansible.builtin.assert:
+        that:
+          - empty is changed
+          - empty.account.services == []
+
+    - name: List the accounts of the local domain
+      wallix.bastion.device_localdomain_account_info:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+      register: all_accounts
+
+    - name: Assert the account is listed
+      ansible.builtin.assert:
+        that:
+          - all_accounts.accounts | map(attribute='account_name') | list == [test_account]
+
+    - name: Delete account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+      register: delete
+
+    - name: Delete account again
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up account after delete
+      wallix.bastion.device_localdomain_account_info:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+      register: after_delete
+
+    - name: Assert account is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.accounts | length == 0
+
+  always:
+    # The Bastion refuses to delete a device that still has accounts.
+    - name: Clean up test account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Clean up test device, its services and local domains
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

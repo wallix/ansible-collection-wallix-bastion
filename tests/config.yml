@@ -1,0 +1,4 @@
+---
+# Modules only run against the Bastion API from a controller-side Python.
+modules:
+  python_requires: ">=3.9"

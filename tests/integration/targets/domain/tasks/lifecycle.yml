@@ -1,0 +1,185 @@
+---
+# Full lifecycle of wallix.bastion.domain against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test domain name
+  ansible.builtin.set_fact:
+    test_domain: ansible-test-domain-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Domain lifecycle
+  block:
+    - name: Create domain (check mode)
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        domain_real_name: test.example.com
+        description: Created by the wallix.bastion integration tests
+      check_mode: true
+      register: create_check
+
+    - name: Look up domain after check mode
+      wallix.bastion.domain_info:
+        domain_name: "{{ test_domain }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.domains | length == 0
+
+    - name: Create domain with admin_account
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        admin_account: nobody
+      register: create_admin
+      ignore_errors: true
+
+    - name: Assert admin_account is refused on creation
+      ansible.builtin.assert:
+        that:
+          - create_admin is failed
+          - "'admin_account' in create_admin.msg"
+
+    - name: Create domain
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        domain_real_name: test.example.com
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+      register: create
+
+    - name: Assert domain was created with a generated CA
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.domain.id | length > 0
+          - create.domain.domain_real_name == 'test.example.com'
+          - create.domain.ca_public_key | length > 0
+          - "'ca_private_key' not in create.domain"
+
+    - name: Create domain again
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        domain_real_name: test.example.com
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+        update_password: always
+      register: create_again
+
+    - name: Assert second create kept the CA key
+      ansible.builtin.assert:
+        that:
+          - create_again.domain.id == create.domain.id
+          - create_again.domain.ca_public_key == create.domain.ca_public_key
+
+    - name: Create domain again without update_password
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        domain_real_name: test.example.com
+        description: Created by the wallix.bastion integration tests
+        ca_private_key: generate:ED25519
+      register: create_again2
+
+    - name: Assert third create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again2 is not changed
+          - create_again2.changed_fields == []
+
+    - name: Update one option
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        description: Updated
+      diff: true
+      register: update
+
+    - name: Assert only the description changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['description']
+          - update.domain.description == 'Updated'
+          - update.domain.domain_real_name == 'test.example.com'
+          - update.domain.ca_public_key == create.domain.ca_public_key
+          - update.diff.before.description != update.diff.after.description
+
+    - name: Create the password change account
+      wallix.bastion.domain_account:
+        domain_name: "{{ test_domain }}"
+        account_name: pwchange
+        account_login: pwchange
+
+    - name: Enable password change
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        admin_account: pwchange
+        enable_password_change: true
+        password_change_policy: default
+        password_change_plugin: Unix
+        password_change_plugin_parameters:
+          host: 192.0.2.1
+      register: enable
+
+    - name: Enable password change again
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        admin_account: pwchange
+        enable_password_change: true
+        password_change_policy: default
+        password_change_plugin: Unix
+        password_change_plugin_parameters:
+          host: 192.0.2.1
+      register: enable_again
+
+    - name: Assert password change was enabled once
+      ansible.builtin.assert:
+        that:
+          - enable is changed
+          - "'password_change_plugin_parameters' in enable.changed_fields"
+          - enable.domain.enable_password_change
+          - enable.domain.admin_account == 'pwchange'
+          - enable.domain.password_change_plugin == 'Unix'
+          - "'password_change_plugin_parameters' not in enable.domain"
+          - enable_again is not changed
+
+    - name: Change vault_plugin
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        vault_plugin: some-vault
+      register: vault
+      ignore_errors: true
+
+    - name: Assert vault_plugin cannot be changed after creation
+      ansible.builtin.assert:
+        that:
+          - vault is failed
+          - "'vault_plugin cannot be changed' in vault.msg"
+
+    - name: Delete domain
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete
+
+    - name: Delete domain again
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up domain after delete
+      wallix.bastion.domain_info:
+        domain_name: "{{ test_domain }}"
+      register: after_delete
+
+    - name: Assert domain is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.domains | length == 0
+
+  always:
+    - name: Clean up test domain
+      wallix.bastion.domain:
+        domain_name: "{{ test_domain }}"
+        state: absent
