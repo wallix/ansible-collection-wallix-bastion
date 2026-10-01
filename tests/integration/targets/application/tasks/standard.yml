@@ -1,0 +1,165 @@
+---
+# Lifecycle of a wallix.bastion.application of the standard category, which runs a program on a
+# cluster of jump servers. Connection comes from main.yml (module_defaults).
+# The collection has no cluster module yet: the cluster fixture is created with the REST API directly.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Set test names
+  ansible.builtin.set_fact:
+    test_device: ansible-test-jump-{{ test_suffix }}
+    test_cluster: ansible-test-cluster-{{ test_suffix }}
+    test_app: ansible-test-stdapp-{{ test_suffix }}
+    test_api: https://{{ wallix_bastion_host }}:{{ wallix_bastion_port | default(443) }}/api/{{ wallix_bastion_api_version | default('v3.12') }}
+
+- name: Standard application lifecycle
+  module_defaults:
+    wallix.bastion.application:
+      application_name: "{{ test_app }}"
+    wallix.bastion.application_info:
+      application_name: "{{ test_app }}"
+    ansible.builtin.uri:
+      headers:
+        X-Auth-User: "{{ wallix_bastion_user }}"
+        X-Auth-Key: "{{ wallix_bastion_token }}"
+      validate_certs: "{{ wallix_bastion_validate_certs | default(true) }}"
+  block:
+    - name: Create jump server device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.30
+
+    - name: Create its RDP service
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: RDP
+        connection_policy: RDP
+        protocol: RDP
+        port: 3389
+
+    - name: Create the jump server cluster
+      ansible.builtin.uri:
+        url: "{{ test_api }}/clusters"
+        method: POST
+        body_format: json
+        body:
+          cluster_name: "{{ test_cluster }}"
+          interactive_logins: ["{{ test_device }}:RDP"]
+        status_code: [204]
+      register: cluster
+      no_log: true
+
+    - name: Create standard application without paths
+      wallix.bastion.application:
+        connection_policy: RDP
+        target: "{{ test_cluster }}"
+      register: no_paths
+      ignore_errors: true
+
+    - name: Assert paths are required
+      ansible.builtin.assert:
+        that:
+          - no_paths is failed
+          - "'paths required to create a standard application' in no_paths.msg"
+
+    - name: Create standard application, category left to its default
+      wallix.bastion.application:
+        connection_policy: RDP
+        target: "{{ test_cluster }}"
+        parameters: --test
+        paths:
+          - target: Interactive@{{ test_device }}:RDP
+            program: C:\Windows\notepad.exe
+      register: create
+
+    - name: Assert standard application was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.application.category == 'standard'
+          - create.application.target == test_cluster
+          - create.application.parameters == '--test'
+          - create.application.paths | length == 1
+          - create.application.paths[0].working_dir == ''
+
+    - name: Create standard application again
+      wallix.bastion.application:
+        connection_policy: RDP
+        category: standard
+        target: "{{ test_cluster }}"
+        parameters: --test
+        paths:
+          - target: Interactive@{{ test_device }}:RDP
+            program: C:\Windows\notepad.exe
+      register: create_again
+
+    - name: Assert second run is idempotent
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+
+    - name: Set a working directory
+      wallix.bastion.application:
+        paths:
+          - target: Interactive@{{ test_device }}:RDP
+            program: C:\Windows\notepad.exe
+            working_dir: C:\Temp
+      register: set_dir
+
+    - name: Remove the working directory and change the parameters
+      wallix.bastion.application:
+        parameters: --other
+        paths:
+          - target: Interactive@{{ test_device }}:RDP
+            program: C:\Windows\notepad.exe
+      register: unset_dir
+
+    - name: Look up application after update
+      wallix.bastion.application_info:
+      register: after_update
+
+    - name: Assert the path was replaced and unset options kept
+      ansible.builtin.assert:
+        that:
+          - set_dir is changed
+          - set_dir.application.paths[0].working_dir == 'C:\Temp'
+          - unset_dir is changed
+          - unset_dir.changed_fields == ['parameters', 'paths']
+          - after_update.applications[0].paths[0].working_dir == ''
+          - after_update.applications[0].parameters == '--other'
+          - after_update.applications[0].target == test_cluster
+
+    - name: Delete standard application
+      wallix.bastion.application:
+        state: absent
+      register: delete
+
+    - name: Look up application after delete
+      wallix.bastion.application_info:
+      register: after_delete
+
+    - name: Assert delete removed the application
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - after_delete.applications | length == 0
+
+  always:
+    - name: Clean up test application
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        state: absent
+
+    - name: Clean up test cluster
+      ansible.builtin.uri:
+        url: "{{ test_api }}/clusters/{{ cluster.x_object_id }}"
+        method: DELETE
+        status_code: [204, 404]
+      when: cluster.x_object_id is defined
+      no_log: true
+
+    - name: Clean up test device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

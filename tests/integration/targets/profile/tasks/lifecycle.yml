@@ -1,0 +1,287 @@
+---
+# Full lifecycle of wallix.bastion.profile against a real Bastion.
+# Connection comes from main.yml (module_defaults). The target groups and the user group of the
+# limitations are created here; "my_user_group" is only referenced. Built-in profiles are only read.
+- name: Pick a unique test suffix
+  ansible.builtin.set_fact:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_profile: ansible-test-profile-{{ test_suffix }}
+    test_usergroup: ansible-test-pgroup-{{ test_suffix }}
+    test_targetgroups:
+      - ansible-test-ptg1-{{ test_suffix }}
+      - ansible-test-ptg2-{{ test_suffix }}
+
+- name: Profile lifecycle
+  block:
+    - name: Create test target groups
+      wallix.bastion.targetgroup:
+        group_name: "{{ item }}"
+      loop: "{{ test_targetgroups }}"
+
+    - name: Create test user group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_usergroup }}"
+        timeframes: [allthetime]
+
+    - name: Create profile (check mode)
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        description: Created by the wallix.bastion integration tests
+        gui_features:
+          wab_audit: view
+          users: modify
+          devices: view
+        gui_transmission:
+          users: view
+        dashboards: [audit, opsadmin]
+        ip_limitation: 10.0.0.0/8
+        target_access: true
+        target_groups_limitation:
+          enabled: true
+          target_groups: "{{ test_targetgroups }}"
+          default_target_group: "{{ test_targetgroups[1] }}"
+        user_groups_limitation:
+          enabled: true
+          user_groups: ["{{ test_usergroup }}", my_user_group]
+      check_mode: true
+      register: create_check
+
+    - name: Look up profile after check mode
+      wallix.bastion.profile_info:
+        profile_name: "{{ test_profile }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.profiles | length == 0
+
+    - name: Create profile
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        description: Created by the wallix.bastion integration tests
+        gui_features:
+          wab_audit: view
+          users: modify
+          devices: view
+        gui_transmission:
+          users: view
+        dashboards: [audit, opsadmin]
+        ip_limitation: 10.0.0.0/8
+        target_access: true
+        target_groups_limitation:
+          enabled: true
+          target_groups: "{{ test_targetgroups }}"
+          default_target_group: "{{ test_targetgroups[1] }}"
+        user_groups_limitation:
+          enabled: true
+          user_groups: ["{{ test_usergroup }}", my_user_group]
+      register: create
+
+    - name: Assert profile was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.profile.id | length > 0
+          - create.profile.gui_features.users == 'modify'
+          - create.profile.gui_features.devices == 'view'
+          - create.profile.gui_features.authorizations is none
+          - create.profile.gui_transmission.users == 'view'
+          - create.profile.gui_transmission.devices is none
+          - create.profile.dashboards | sort == ['audit', 'opsadmin']
+          - create.profile.target_access
+          - create.profile.target_groups_limitation.target_groups == test_targetgroups | sort
+          - create.profile.target_groups_limitation.default_target_group == test_targetgroups[1]
+          - create.profile.user_groups_limitation.user_groups == [test_usergroup, 'my_user_group'] | sort
+
+    - name: Create profile again, lists reordered
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        description: Created by the wallix.bastion integration tests
+        gui_features:
+          devices: view
+          users: modify
+          wab_audit: view
+        gui_transmission:
+          users: view
+        dashboards: [opsadmin, audit]
+        ip_limitation: 10.0.0.0/8
+        target_access: true
+        target_groups_limitation:
+          enabled: true
+          target_groups: "{{ test_targetgroups | reverse }}"
+          default_target_group: "{{ test_targetgroups[1] }}"
+        user_groups_limitation:
+          enabled: true
+          user_groups: [my_user_group, "{{ test_usergroup }}"]
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.profile.id == create.profile.id
+
+    - name: Remove a right, a dashboard, a target group and a user group
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        gui_features:
+          wab_audit: view
+          users: modify
+        dashboards: [audit]
+        target_groups_limitation:
+          enabled: true
+          target_groups: "{{ test_targetgroups[:1] }}"
+        user_groups_limitation:
+          enabled: true
+          user_groups: ["{{ test_usergroup }}"]
+      diff: true
+      register: update
+
+    - name: Assert the items were really removed and the rest kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['dashboards', 'gui_features', 'target_groups_limitation', 'user_groups_limitation']
+          - update.profile.gui_features.devices is none
+          - update.profile.gui_features.users == 'modify'
+          - update.profile.gui_transmission.users == 'view'
+          - update.profile.dashboards == ['audit']
+          - update.profile.target_groups_limitation.target_groups == test_targetgroups[:1]
+          - update.profile.target_groups_limitation.default_target_group == test_targetgroups[0]
+          - update.profile.user_groups_limitation.user_groups == [test_usergroup]
+          - update.profile.description == 'Created by the wallix.bastion integration tests'
+          - update.profile.ip_limitation == '10.0.0.0/8'
+          - update.diff.before.dashboards | length == 2
+
+    - name: Same update again, without the default target group the Bastion picked
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        gui_features:
+          wab_audit: view
+          users: modify
+        dashboards: [audit]
+        target_groups_limitation:
+          enabled: true
+          target_groups: "{{ test_targetgroups[:1] }}"
+        user_groups_limitation:
+          enabled: true
+          user_groups: ["{{ test_usergroup }}"]
+      register: update_again
+
+    - name: Update the description only
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        description: Updated
+      register: update_description
+
+    - name: Assert idempotency and that rights survive an unrelated update
+      ansible.builtin.assert:
+        that:
+          - update_again is not changed
+          - update_description is changed
+          - update_description.changed_fields == ['description']
+          - update_description.profile.gui_features.users == 'modify'
+          - update_description.profile.gui_features.wab_audit == 'view'
+          - update_description.profile.gui_transmission.users == 'view'
+          - update_description.profile.dashboards == ['audit']
+          - update_description.profile.target_groups_limitation.enabled
+
+    - name: Remove the limitations, the IP limitation and every dashboard
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        dashboards: []
+        ip_limitation: ""
+        target_groups_limitation:
+          enabled: false
+        user_groups_limitation:
+          enabled: false
+      register: no_limits
+
+    - name: Remove the limitations again
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        dashboards: []
+        ip_limitation: ""
+        target_groups_limitation:
+          enabled: false
+        user_groups_limitation:
+          enabled: false
+      register: no_limits_again
+
+    - name: Assert limitations are gone
+      ansible.builtin.assert:
+        that:
+          - no_limits is changed
+          - no_limits_again is not changed
+          - no_limits.profile.dashboards == []
+          - no_limits.profile.ip_limitation == ''
+          - "no_limits.profile.target_groups_limitation == {'enabled': false}"
+          - "no_limits.profile.user_groups_limitation == {'enabled': false}"
+          - no_limits.profile.gui_features.users == 'modify'
+
+    - name: Ask for an invalid right
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        gui_features:
+          profiles: view
+      register: bad_right
+      ignore_errors: true
+
+    - name: Read a built-in profile
+      wallix.bastion.profile_info:
+        profile_name: auditor
+      register: auditor
+
+    - name: Assert validation and info
+      ansible.builtin.assert:
+        that:
+          - bad_right is failed
+          - auditor.profiles | length == 1
+          - not auditor.profiles[0].editable
+          - auditor.profiles[0].gui_features.wab_audit == 'view'
+
+    - name: Delete profile
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        state: absent
+      register: delete
+
+    - name: Delete profile again
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up profile after delete
+      wallix.bastion.profile_info:
+        profile_name: "{{ test_profile }}"
+      register: after_delete
+
+    - name: Assert profile is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.profiles | length == 0
+
+  always:
+    - name: Clean up test profile
+      wallix.bastion.profile:
+        profile_name: "{{ test_profile }}"
+        state: absent
+
+    - name: Clean up test user group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_usergroup }}"
+        state: absent
+
+    - name: Clean up test target groups
+      wallix.bastion.targetgroup:
+        group_name: "{{ item }}"
+        state: absent
+      loop: "{{ test_targetgroups }}"

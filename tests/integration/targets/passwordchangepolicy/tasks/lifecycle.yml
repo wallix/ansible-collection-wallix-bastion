@@ -1,0 +1,156 @@
+---
+# Full lifecycle of wallix.bastion.passwordchangepolicy against a real Bastion.
+# Connection comes from main.yml (module_defaults). The built-in "default" policy is only read.
+- name: Pick a unique test policy name
+  ansible.builtin.set_fact:
+    test_policy: ansible-test-pwchange-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Password change policy lifecycle
+  block:
+    - name: Create policy (check mode)
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        description: Created by the wallix.bastion integration tests
+        password_length: 20
+        lower_chars: 2
+        upper_chars: 2
+        digit_chars: 0
+        exclude_chars: Il0O
+        change_period: "0 3 * * 1"
+      check_mode: true
+      register: create_check
+
+    - name: Look up policy after check mode
+      wallix.bastion.passwordchangepolicy_info:
+        password_change_policy_name: "{{ test_policy }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.passwordchangepolicies | length == 0
+
+    - name: Create policy
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        description: Created by the wallix.bastion integration tests
+        password_length: 20
+        lower_chars: 2
+        upper_chars: 2
+        digit_chars: 0
+        exclude_chars: Il0O
+        change_period: "0 3 * * 1"
+      register: create
+
+    - name: Assert policy was created, unused character classes are null
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.passwordchangepolicy.id | length > 0
+          - create.passwordchangepolicy.password_length == 20
+          - create.passwordchangepolicy.digit_chars == 0
+          - create.passwordchangepolicy.special_chars is none
+          - create.passwordchangepolicy.ssh_key_type is none
+          - create.passwordchangepolicy.change_period == '0 3 * * 1'
+
+    - name: Create policy again
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        description: Created by the wallix.bastion integration tests
+        password_length: 20
+        lower_chars: 2
+        upper_chars: 2
+        digit_chars: 0
+        exclude_chars: Il0O
+        change_period: "0 3 * * 1"
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.passwordchangepolicy.id == create.passwordchangepolicy.id
+
+    - name: Add SSH key settings and stop the schedule
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        ssh_key_type: ECDSA
+        ssh_key_size: 384
+        change_period: ""
+      diff: true
+      register: update
+
+    - name: Assert SSH settings were added and the rest kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['change_period', 'ssh_key_size', 'ssh_key_type']
+          - update.passwordchangepolicy.ssh_key_type == 'ECDSA'
+          - update.passwordchangepolicy.ssh_key_size == 384
+          - update.passwordchangepolicy.change_period == ''
+          - update.passwordchangepolicy.password_length == 20
+          - update.passwordchangepolicy.exclude_chars == 'Il0O'
+          - update.diff.before.change_period == '0 3 * * 1'
+
+    - name: Same update again
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        ssh_key_type: ECDSA
+        ssh_key_size: 384
+        change_period: ""
+      register: update_again
+
+    - name: Bad cron expression
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        change_period: not a cron
+      register: bad_cron
+      ignore_errors: true
+
+    - name: Assert idempotency and API validation
+      ansible.builtin.assert:
+        that:
+          - update_again is not changed
+          - bad_cron is failed
+          - bad_cron.status == 400
+
+    - name: Read the built-in default policy
+      wallix.bastion.passwordchangepolicy_info:
+        password_change_policy_name: default
+      register: default_policy
+
+    - name: Assert info returns it
+      ansible.builtin.assert:
+        that:
+          - default_policy.passwordchangepolicies | length == 1
+
+    - name: Delete policy
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        state: absent
+      register: delete
+
+    - name: Delete policy again
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up policy after delete
+      wallix.bastion.passwordchangepolicy_info:
+        password_change_policy_name: "{{ test_policy }}"
+      register: after_delete
+
+    - name: Assert policy is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.passwordchangepolicies | length == 0
+
+  always:
+    - name: Clean up test policy
+      wallix.bastion.passwordchangepolicy:
+        password_change_policy_name: "{{ test_policy }}"
+        state: absent

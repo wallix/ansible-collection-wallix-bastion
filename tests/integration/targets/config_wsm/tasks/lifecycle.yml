@@ -1,0 +1,90 @@
+---
+# WSM configuration: an appliance-wide singleton. The test changes and clears the host name, then restores
+# the exact original in always. jwe_public is only restored when it was readable (not masked).
+- name: Read the original WSM configuration
+  wallix.bastion.config_wsm_info:
+  register: original
+
+- name: Decide whether a live change can be restored exactly
+  ansible.builtin.set_fact:
+    wsm_orig: "{{ original.config_wsm }}"
+    wsm_live: "{{ '*' not in original.config_wsm.jwe_public }}"
+    wsm_host: ansible-test-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}.example.com
+
+- name: WSM configuration tests
+  block:
+    - name: Change the host name (check mode)
+      wallix.bastion.config_wsm:
+        hostname: "{{ wsm_host }}"
+      check_mode: true
+      diff: true
+      register: change_check
+
+    - name: Read the WSM configuration after check mode
+      wallix.bastion.config_wsm_info:
+      register: after_check
+
+    - name: Assert check mode reported the change without making it
+      ansible.builtin.assert:
+        that:
+          - change_check is changed
+          - change_check.changed_fields == ['hostname']
+          - change_check.diff.after.hostname == wsm_host
+          - after_check.config_wsm == wsm_orig
+          - "'jws_private' not in change_check.config_wsm"
+
+    - name: Same values as the Bastion
+      wallix.bastion.config_wsm:
+        hostname: "{{ wsm_orig.hostname }}"
+        jwe_public: "{{ wsm_orig.jwe_public }}"
+      register: same
+
+    - name: Assert unchanged values are not a change
+      ansible.builtin.assert:
+        that:
+          - same is not changed
+
+    - name: Live change
+      when: wsm_live | bool
+      block:
+        - name: Change the host name
+          wallix.bastion.config_wsm:
+            hostname: "{{ wsm_host }}"
+          diff: true
+          register: change
+
+        - name: Change the host name again
+          wallix.bastion.config_wsm:
+            hostname: "{{ wsm_host }}"
+          register: change_again
+
+        - name: Clear the host name
+          wallix.bastion.config_wsm:
+            hostname: ""
+          register: clear
+
+        - name: Assert the changes
+          ansible.builtin.assert:
+            that:
+              - change is changed
+              - change.config_wsm == wsm_orig | combine(dict(hostname=wsm_host))
+              - change_again is not changed
+              - clear is changed
+              - clear.config_wsm.hostname == ''
+              - clear.config_wsm.jwe_public == wsm_orig.jwe_public
+
+  always:
+    - name: Restore the original WSM configuration
+      wallix.bastion.config_wsm:
+        hostname: "{{ wsm_orig.hostname }}"
+        jwe_public: "{{ wsm_orig.jwe_public }}"
+      when: wsm_live | bool
+
+    - name: Read the WSM configuration after restore
+      wallix.bastion.config_wsm_info:
+      register: restored
+
+    - name: Assert the WSM configuration is exactly the original
+      ansible.builtin.assert:
+        that:
+          - restored.config_wsm == wsm_orig

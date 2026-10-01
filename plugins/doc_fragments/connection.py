@@ -55,9 +55,9 @@ options:
       - Send the CSRF token the Bastion issues at login (Bastion 12.0.3 and later).
       - If not set, the value of the E(WALLIX_CSRF_ENABLED) environment variable is used, then V(true).
     type: bool
-  timeout:
+  bastion_timeout:
     description:
-      - Timeout in seconds of each HTTP request.
+      - Timeout in seconds of each HTTP request to the Bastion API.
     type: int
     default: 30
 notes:

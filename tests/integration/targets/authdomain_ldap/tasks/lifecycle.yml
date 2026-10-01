@@ -1,0 +1,247 @@
+---
+# Full lifecycle of wallix.bastion.authdomain_ldap against a real Bastion.
+# Connection comes from main.yml (module_defaults). The external authentications the domain
+# needs are created with raw API calls (externalauth.yml) and point at documentation addresses.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_domain: ansible-test-ldap-{{ test_suffix }}
+    test_auth1: ansible-test-ldap1-{{ test_suffix }}
+    test_auth2: ansible-test-ldap2-{{ test_suffix }}
+    test_ldap_body:
+      type: LDAP
+      host: 192.0.2.10
+      port: 389
+      timeout: 5
+      ldap_base: dc=example,dc=com
+      cn_attribute: cn
+      login_attribute: uid
+      is_active_directory: false
+      is_anonymous_access: true
+  vars:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Authentication domain lifecycle
+  block:
+    - name: Create the external authentications
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: present
+        externalauth_name: "{{ item }}"
+        externalauth_body: "{{ test_ldap_body }}"
+      loop: ["{{ test_auth1 }}", "{{ test_auth2 }}"]
+
+    - name: Create domain (check mode)
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: ldap.example.com
+        default_email_domain: example.com
+        default_language: fr
+        external_auths: ["{{ test_auth1 }}"]
+      check_mode: true
+      register: create_check
+
+    - name: Look up domain after check mode
+      wallix.bastion.authdomain_ldap_info:
+        domain_name: "{{ test_domain }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.authdomains | length == 0
+
+    - name: Create domain without the required options
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: ldap.example.com
+      register: create_missing
+      ignore_errors: true
+
+    - name: Assert the required options are checked
+      ansible.builtin.assert:
+        that:
+          - create_missing is failed
+          - "'default_email_domain, default_language, external_auths required' in create_missing.msg"
+
+    - name: Create domain
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: ldap.example.com
+        default_email_domain: example.com
+        default_language: fr
+        external_auths: ["{{ test_auth1 }}", "{{ test_auth2 }}"]
+        description: Created by the wallix.bastion integration tests
+        group_attribute: memberOf
+        is_default: false
+      register: create
+
+    - name: Assert domain was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.authdomain.id | length > 0
+          - create.authdomain.type == 'LDAP'
+          - create.authdomain.external_auths == [test_auth1, test_auth2]
+          - create.authdomain.group_attribute == 'memberOf'
+          - create.authdomain.secondary_auth == []
+
+    - name: Create domain again
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: ldap.example.com
+        default_email_domain: example.com
+        default_language: fr
+        external_auths: ["{{ test_auth1 }}", "{{ test_auth2 }}"]
+        description: Created by the wallix.bastion integration tests
+        group_attribute: memberOf
+        is_default: false
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.changed_fields == []
+
+    - name: Reorder the external authentications
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        external_auths: ["{{ test_auth2 }}", "{{ test_auth1 }}"]
+      register: reorder
+
+    - name: Remove an external authentication
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        external_auths: ["{{ test_auth2 }}"]
+      register: remove_one
+
+    - name: Assert lists are replaced, not appended to
+      ansible.builtin.assert:
+        that:
+          - reorder is changed
+          - reorder.changed_fields == ['external_auths']
+          - reorder.authdomain.external_auths == [test_auth2, test_auth1]
+          - remove_one is changed
+          - remove_one.authdomain.external_auths == [test_auth2]
+
+    - name: Add a secondary authentication
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        secondary_auth: ["{{ test_auth1 }}"]
+      register: add_secondary
+
+    - name: Remove the secondary authentications
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        secondary_auth: []
+      register: remove_secondary
+
+    - name: Remove the secondary authentications again
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        secondary_auth: []
+      register: remove_secondary_again
+
+    - name: Assert secondary authentications were added and removed
+      ansible.builtin.assert:
+        that:
+          - add_secondary is changed
+          - add_secondary.authdomain.secondary_auth == [test_auth1]
+          - remove_secondary is changed
+          - remove_secondary.authdomain.secondary_auth == []
+          - remove_secondary_again is not changed
+
+    - name: Update one option (check mode)
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        description: Updated
+      check_mode: true
+      diff: true
+      register: update_check
+
+    - name: Update one option
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        description: Updated
+        email_attribute: mail
+      diff: true
+      register: update
+
+    - name: Assert only the requested options changed and the others were kept
+      ansible.builtin.assert:
+        that:
+          - update_check is changed
+          - update_check.diff.after.description == 'Updated'
+          - update is changed
+          - update.changed_fields == ['description', 'email_attribute']
+          - update.diff.before.description == 'Created by the wallix.bastion integration tests'
+          - update.authdomain.description == 'Updated'
+          - update.authdomain.email_attribute == 'mail'
+          - update.authdomain.group_attribute == 'memberOf'
+          - update.authdomain.auth_domain_name == 'ldap.example.com'
+          - update.authdomain.external_auths == [test_auth2]
+
+    - name: Manage the domain with the module of another type
+      wallix.bastion.authdomain_ad:
+        domain_name: "{{ test_domain }}"
+        description: wrong type
+      register: wrong_type
+      ignore_errors: true
+
+    - name: Look up domain with the info modules
+      wallix.bastion.authdomain_ldap_info:
+        domain_name: "{{ test_domain }}"
+      register: info
+
+    - name: Look up domain as an AD domain
+      wallix.bastion.authdomain_ad_info:
+        domain_name: "{{ test_domain }}"
+      register: info_ad
+
+    - name: Assert the type is checked
+      ansible.builtin.assert:
+        that:
+          - wrong_type is failed
+          - "'type LDAP' in wrong_type.msg"
+          - info.authdomains | length == 1
+          - info.authdomains[0].description == 'Updated'
+          - info.authdomains[0].type == 'LDAP'
+          - info_ad.authdomains == []
+
+    - name: Delete domain
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete
+
+    - name: Delete domain again
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up domain after delete
+      wallix.bastion.authdomain_ldap_info:
+        domain_name: "{{ test_domain }}"
+      register: after_delete
+
+    - name: Assert domain is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.authdomains | length == 0
+
+  always:
+    - name: Clean up test domain
+      wallix.bastion.authdomain_ldap:
+        domain_name: "{{ test_domain }}"
+        state: absent
+
+    - name: Clean up the external authentications
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: absent
+        externalauth_name: "{{ item }}"
+      loop: ["{{ test_auth1 }}", "{{ test_auth2 }}"]

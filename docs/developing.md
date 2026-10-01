@@ -42,6 +42,10 @@ For a resource `<name>`:
   If the PUT also refuses fields that GET returns, use `merge_on_update=False` to send only the
   requested fields. `null` values are never sent back.
 - Collections without `q=` search (credentials) use `search="list"`.
+- Option names that clash with Ansible or with the connection options are the only exception to
+  "option names are API field names": `message` is reserved by Ansible (`connection_message` uses
+  `message_text`). The connection options all start with `bastion_` (except `api_version`,
+  `validate_certs` and `csrf_enabled`) so API fields such as `timeout` keep their name.
 - Objects without an `id` (users) are addressed by name: override `object_path()` and `read()`,
   see `plugins/modules/user.py`.
 - When the API shape differs from the options (nested objects, ids instead of names, fields the

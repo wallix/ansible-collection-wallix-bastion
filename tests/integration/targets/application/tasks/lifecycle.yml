@@ -1,0 +1,193 @@
+---
+# Full lifecycle of wallix.bastion.application (web_application category) against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick a unique test application name
+  ansible.builtin.set_fact:
+    test_app: ansible-test-webapp-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Web application lifecycle
+  module_defaults:
+    wallix.bastion.application:
+      application_name: "{{ test_app }}"
+    wallix.bastion.application_info:
+      application_name: "{{ test_app }}"
+  block:
+    - name: Create web application (check mode)
+      wallix.bastion.application:
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+      check_mode: true
+      register: create_check
+
+    - name: Look up application after check mode
+      wallix.bastion.application_info:
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.applications | length == 0
+
+    - name: Create web application without the URL
+      wallix.bastion.application:
+        connection_policy: WEBAPP
+        category: web_application
+      register: no_url
+      ignore_errors: true
+
+    - name: Assert the URL is required
+      ansible.builtin.assert:
+        that:
+          - no_url is failed
+          - "'application_url required' in no_url.msg"
+
+    - name: Create web application
+      wallix.bastion.application:
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+        description: Created by ansible-test
+        tags:
+          - key: env
+            value: test
+          - key: owner
+            value: ansible
+      register: create
+
+    - name: Assert web application was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.application.id | length > 0
+          - create.application.category == 'web_application'
+          - create.application.application_url == 'https://example.com/login'
+          - create.application.tags | length == 2
+
+    - name: Create web application again, tags in another order
+      wallix.bastion.application:
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+        description: Created by ansible-test
+        tags:
+          - key: owner
+            value: ansible
+          - key: env
+            value: test
+      register: create_again
+
+    - name: Assert second run is idempotent
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.changed_fields == []
+
+    - name: Update URL, remove a tag and add a global domain (check mode)
+      wallix.bastion.application:
+        application_url: https://example.com/other
+        tags:
+          - key: env
+            value: test
+        global_domains: [corp.local]
+      check_mode: true
+      register: update_check
+
+    - name: Update URL, remove a tag and add a global domain
+      wallix.bastion.application:
+        application_url: https://example.com/other
+        tags:
+          - key: env
+            value: test
+        global_domains: [corp.local]
+      register: update
+
+    - name: Look up application after update
+      wallix.bastion.application_info:
+      register: after_update
+
+    - name: Assert update changed only the requested fields and replaced the lists
+      ansible.builtin.assert:
+        that:
+          - update_check is changed
+          - update is changed
+          - update.changed_fields == ['application_url', 'global_domains', 'tags']
+          - after_update.applications[0].application_url == 'https://example.com/other'
+          - "after_update.applications[0].tags == [{'key': 'env', 'value': 'test'}]"
+          - after_update.applications[0].global_domains == ['corp.local']
+          - after_update.applications[0].description == 'Created by ansible-test'
+          - after_update.applications[0].connection_policy == 'WEBAPP'
+
+    - name: Remove the global domain and the tags
+      wallix.bastion.application:
+        global_domains: []
+        tags: []
+      register: empty_lists
+
+    - name: Look up application after emptying the lists
+      wallix.bastion.application_info:
+      register: after_empty
+
+    - name: Assert the lists were emptied
+      ansible.builtin.assert:
+        that:
+          - empty_lists is changed
+          - after_empty.applications[0].global_domains == []
+          - after_empty.applications[0].tags == []
+
+    - name: Try to change the category
+      wallix.bastion.application:
+        category: standard
+      register: change_category
+      ignore_errors: true
+
+    - name: Assert the category cannot change
+      ansible.builtin.assert:
+        that:
+          - change_category is failed
+          - "'category cannot be changed' in change_category.msg"
+
+    - name: List all applications
+      wallix.bastion.application_info:
+        application_name: "{{ omit }}"
+      register: all_apps
+
+    - name: Assert the test application is listed
+      ansible.builtin.assert:
+        that:
+          - test_app in all_apps.applications | map(attribute='application_name') | list
+
+    - name: Delete web application (check mode)
+      wallix.bastion.application:
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete web application
+      wallix.bastion.application:
+        state: absent
+      register: delete
+
+    - name: Delete web application again
+      wallix.bastion.application:
+        state: absent
+      register: delete_again
+
+    - name: Look up application after delete
+      wallix.bastion.application_info:
+      register: after_delete
+
+    - name: Assert delete removed the application and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.applications | length == 0
+
+  always:
+    - name: Clean up test application
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        state: absent

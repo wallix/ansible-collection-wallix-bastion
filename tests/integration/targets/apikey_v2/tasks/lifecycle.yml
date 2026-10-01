@@ -1,0 +1,170 @@
+---
+# Full lifecycle of wallix.bastion.apikey_v2 against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+# Safety: the tests authenticate with an API key. Only the key named test_key, created here, is changed
+# or deleted, and only after checking its id is the one this test created.
+- name: Pick a unique test API key name
+  ansible.builtin.set_fact:
+    test_key: ansible-test-apikeyv2-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: API key v2 lifecycle
+  block:
+    - name: Create API key (check mode)
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        profile: auditor
+        description: Created by the wallix.bastion integration tests
+      check_mode: true
+      register: create_check
+
+    - name: Look up API key after check mode
+      wallix.bastion.apikey_v2_info:
+        apikey_name: "{{ test_key }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it or returning a key
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - create_check.apikey.apikey is not defined
+          - after_check.apikeys | length == 0
+
+    - name: Try to create a key without a profile
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+      register: no_profile
+      ignore_errors: true
+
+    - name: Assert the profile is required on creation
+      ansible.builtin.assert:
+        that:
+          - no_profile is failed
+          - "'profile required' in no_profile.msg"
+
+    - name: Create API key
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        profile: auditor
+        description: Created by the wallix.bastion integration tests
+      register: create
+      no_log: true
+
+    - name: Assert API key was created and its value returned
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.apikey.id | length > 0
+          - create.apikey.apikey_name == test_key
+          - create.apikey.profile == 'auditor'
+          - create.apikey.apikey | length > 20
+          - "'*' not in create.apikey.apikey"
+
+    - name: Use the new key (read-only)
+      wallix.bastion.apikey_v2_info:
+        bastion_token: "{{ create.apikey.apikey }}"
+        bastion_password: "{{ omit }}"
+        apikey_name: "{{ test_key }}"
+      register: with_new_key
+      ignore_errors: true
+
+    - name: Assert the key authenticates and its auditor profile cannot read API keys
+      ansible.builtin.assert:
+        that:
+          - with_new_key is failed
+          - with_new_key.status == 403
+
+    - name: Create API key again
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        profile: auditor
+        description: Created by the wallix.bastion integration tests
+      register: create_again
+
+    - name: Assert second create is a no-op and does not return the key
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.apikey.id == create.apikey.id
+          - create_again.apikey.apikey is not defined
+
+    - name: Update the description
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        description: Updated by the wallix.bastion integration tests
+      diff: true
+      register: update
+
+    - name: Assert only the description changed
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['description']
+          - update.apikey.id == create.apikey.id
+          - update.apikey.description == 'Updated by the wallix.bastion integration tests'
+          - update.apikey.profile == 'auditor'
+          - update.apikey.apikey is not defined
+
+    - name: Try to change the profile
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        profile: user
+      register: change_profile
+      ignore_errors: true
+
+    - name: Try to change the IP limitation (check mode)
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        ip_limitation: 192.0.2.1
+      check_mode: true
+      register: change_ip
+      ignore_errors: true
+
+    - name: Assert create-only options cannot be changed
+      ansible.builtin.assert:
+        that:
+          - change_profile is failed
+          - "'profile cannot be changed' in change_profile.msg"
+          - change_ip is failed
+          - "'ip_limitation cannot be changed' in change_ip.msg"
+
+    - name: Look up the key with the v1 module and before deleting it
+      wallix.bastion.apikey_info:
+        apikey_name: "{{ test_key }}"
+      register: before_delete
+
+    - name: Assert it is still the key this test created, also seen by the v1 API
+      ansible.builtin.assert:
+        that:
+          - before_delete.apikeys | length == 1
+          - before_delete.apikeys[0].id == create.apikey.id
+
+    - name: Delete API key
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      register: delete
+
+    - name: Delete API key again
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up API key after delete
+      wallix.bastion.apikey_v2_info:
+        apikey_name: "{{ test_key }}"
+      register: after_delete
+
+    - name: Assert API key is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.apikeys | length == 0
+
+  always:
+    - name: Clean up test API key
+      wallix.bastion.apikey_v2:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      when: test_key is match('ansible-test-')

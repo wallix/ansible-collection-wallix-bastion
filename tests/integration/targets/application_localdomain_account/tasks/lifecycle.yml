@@ -1,0 +1,167 @@
+---
+# Full lifecycle of wallix.bastion.application_localdomain_account against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_app: ansible-test-appacc-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-admin
+
+- name: Application local domain account lifecycle
+  module_defaults:
+    wallix.bastion.application_localdomain_account:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+    wallix.bastion.application_localdomain_account_info:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+  block:
+    - name: Create parent application
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+
+    - name: Create parent local domain
+      wallix.bastion.application_localdomain:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+
+    - name: Create account (check mode)
+      wallix.bastion.application_localdomain_account:
+        account_login: admin
+      check_mode: true
+      register: create_check
+
+    - name: Look up account after check mode
+      wallix.bastion.application_localdomain_account_info:
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.accounts | length == 0
+
+    - name: Create account without a login
+      wallix.bastion.application_localdomain_account:
+      register: no_login
+      ignore_errors: true
+
+    - name: Assert the login is required
+      ansible.builtin.assert:
+        that:
+          - no_login is failed
+          - "'account_login required' in no_login.msg"
+
+    - name: Create account
+      wallix.bastion.application_localdomain_account:
+        account_login: admin
+        description: Created by ansible-test
+      register: create
+
+    - name: Create account again
+      wallix.bastion.application_localdomain_account:
+        account_login: admin
+        description: Created by ansible-test
+        checkout_policy: default
+      register: create_again
+
+    - name: Assert account was created once, with the Bastion defaults
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.account.id | length > 0
+          - create.account.checkout_policy == 'default'
+          - create.account.auto_change_password
+          - create_again is not changed
+          - create_again.changed_fields == []
+
+    - name: Set a password
+      wallix.bastion.application_localdomain_account_credential:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        type: password
+        password: "{{ lookup('ansible.builtin.password', '/dev/null', length=20, chars=['ascii_letters', 'digits']) }}-Aa1"
+      no_log: true
+
+    - name: Update login and password rotation (check mode)
+      wallix.bastion.application_localdomain_account:
+        account_login: admin2
+        auto_change_password: false
+      check_mode: true
+      register: update_check
+
+    - name: Update login and password rotation
+      wallix.bastion.application_localdomain_account:
+        account_login: admin2
+        auto_change_password: false
+      register: update
+
+    - name: Look up account after update
+      wallix.bastion.application_localdomain_account_info:
+      register: after_update
+
+    - name: Assert update changed only the requested fields and kept the password
+      ansible.builtin.assert:
+        that:
+          - update_check is changed
+          - update is changed
+          - update.changed_fields == ['account_login', 'auto_change_password']
+          - after_update.accounts[0].account_login == 'admin2'
+          - not after_update.accounts[0].auto_change_password
+          - after_update.accounts[0].description == 'Created by ansible-test'
+          - after_update.accounts[0].credentials | map(attribute='type') | list == ['password']
+          - after_update.accounts[0].credentials[0].password is not defined
+
+    - name: List the accounts of the local domain
+      wallix.bastion.application_localdomain_account_info:
+        account_name: "{{ omit }}"
+      register: all_accounts
+
+    - name: Assert the account is listed
+      ansible.builtin.assert:
+        that:
+          - all_accounts.accounts | map(attribute='account_name') | list == [test_account]
+
+    - name: Delete account (check mode)
+      wallix.bastion.application_localdomain_account:
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete account
+      wallix.bastion.application_localdomain_account:
+        state: absent
+      register: delete
+
+    - name: Delete account again
+      wallix.bastion.application_localdomain_account:
+        state: absent
+      register: delete_again
+
+    - name: Look up account after delete
+      wallix.bastion.application_localdomain_account_info:
+      register: after_delete
+
+    - name: Assert delete removed the account and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.accounts | length == 0
+
+  always:
+    - name: Clean up test account
+      wallix.bastion.application_localdomain_account:
+        state: absent
+
+    - name: Clean up test application and its local domains
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        state: absent

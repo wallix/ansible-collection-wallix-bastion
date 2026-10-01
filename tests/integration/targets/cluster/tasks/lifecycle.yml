@@ -1,0 +1,239 @@
+---
+# Full lifecycle of wallix.bastion.cluster against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_cluster: ansible-test-cluster-{{ suffix }}
+    test_device: ansible-test-clusterdev-{{ suffix }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-admin
+  vars:
+    suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Cluster lifecycle
+  block:
+    - name: Create the target device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        host: 192.0.2.60
+
+    - name: Create RDP services of the device (clusters only accept RDP targets)
+      wallix.bastion.device_service:
+        device_name: "{{ test_device }}"
+        service_name: "{{ item }}"
+        connection_policy: RDP
+        protocol: RDP
+        port: 3389
+        subprotocols: [RDP_CLIPBOARD_UP]
+      loop: [RDP, RDP2]
+
+    - name: Create a local domain of the device
+      wallix.bastion.device_localdomain:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+
+    - name: Create an account on both services
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: administrator
+        services: [RDP, RDP2]
+
+    - name: Create cluster (check mode)
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        description: Created by the wallix.bastion integration tests
+        interactive_logins:
+          - "{{ test_device }}:RDP"
+          - "{{ test_device }}:RDP2"
+      check_mode: true
+      register: create_check
+
+    - name: Look up cluster after check mode
+      wallix.bastion.cluster_info:
+        cluster_name: "{{ test_cluster }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.clusters | length == 0
+
+    - name: Try to create a cluster without targets
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        description: no targets
+      register: no_target
+      ignore_errors: true
+
+    - name: Assert a cluster needs a target
+      ansible.builtin.assert:
+        that:
+          - no_target is failed
+          - "'at least one target' in no_target.msg"
+
+    - name: Create cluster
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        description: Created by the wallix.bastion integration tests
+        interactive_logins:
+          - "{{ test_device }}:RDP"
+          - "{{ test_device }}:RDP2"
+      register: create
+
+    - name: Assert cluster was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.cluster.id | length > 0
+          - create.cluster.interactive_logins | sort == [test_device ~ ':RDP', test_device ~ ':RDP2']
+          - create.cluster.accounts == []
+
+    - name: Create cluster again, targets in another order
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        description: Created by the wallix.bastion integration tests
+        interactive_logins:
+          - "{{ test_device }}:RDP2"
+          - "{{ test_device }}:RDP"
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.cluster.id == create.cluster.id
+
+    - name: Add account targets
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        accounts:
+          - "{{ test_account }}@{{ test_domain }}@{{ test_device }}:RDP"
+          - "{{ test_account }}@{{ test_domain }}@{{ test_device }}:RDP2"
+      diff: true
+      register: add_accounts
+
+    - name: Assert accounts were added and the other options were kept
+      ansible.builtin.assert:
+        that:
+          - add_accounts is changed
+          - add_accounts.changed_fields == ['accounts']
+          - add_accounts.cluster.accounts | length == 2
+          - add_accounts.cluster.interactive_logins | length == 2
+          - add_accounts.cluster.description == 'Created by the wallix.bastion integration tests'
+          - add_accounts.diff.before.accounts == []
+
+    - name: Remove one interactive login and one account
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        interactive_logins:
+          - "{{ test_device }}:RDP2"
+        accounts:
+          - "{{ test_account }}@{{ test_domain }}@{{ test_device }}:RDP"
+      register: remove_items
+
+    - name: Read the cluster back
+      wallix.bastion.cluster_info:
+        cluster_name: "{{ test_cluster }}"
+      register: after_remove
+
+    - name: Assert the removed targets are really gone
+      ansible.builtin.assert:
+        that:
+          - remove_items is changed
+          - remove_items.changed_fields == ['accounts', 'interactive_logins']
+          - after_remove.clusters[0].interactive_logins == [test_device ~ ':RDP2']
+          - after_remove.clusters[0].accounts == [test_account ~ '@' ~ test_domain ~ '@' ~ test_device ~ ':RDP']
+
+    - name: Replace the interactive logins by account mappings
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        interactive_logins: []
+        account_mappings:
+          - "{{ test_device }}:RDP"
+      register: to_mappings
+
+    - name: Assert the interactive logins were emptied
+      ansible.builtin.assert:
+        that:
+          - to_mappings is changed
+          - to_mappings.cluster.interactive_logins == []
+          - to_mappings.cluster.account_mappings == [test_device ~ ':RDP']
+          - to_mappings.cluster.accounts | length == 1
+
+    - name: Try to remove every target (check mode)
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        accounts: []
+        account_mappings: []
+      check_mode: true
+      register: remove_all
+      ignore_errors: true
+
+    - name: Assert the last targets cannot be removed
+      ansible.builtin.assert:
+        that:
+          - remove_all is failed
+          - "'at least one target' in remove_all.msg"
+
+    - name: List every cluster
+      wallix.bastion.cluster_info:
+      register: all_clusters
+
+    - name: Assert the test cluster is listed
+      ansible.builtin.assert:
+        that:
+          - test_cluster in all_clusters.clusters | map(attribute='cluster_name')
+
+    - name: Delete cluster (check mode)
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete cluster
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        state: absent
+      register: delete
+
+    - name: Delete cluster again
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up cluster after delete
+      wallix.bastion.cluster_info:
+        cluster_name: "{{ test_cluster }}"
+      register: after_delete
+
+    - name: Assert cluster is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.clusters | length == 0
+
+  always:
+    - name: Clean up test cluster
+      wallix.bastion.cluster:
+        cluster_name: "{{ test_cluster }}"
+        state: absent
+
+    # The Bastion refuses to delete a device that still has accounts.
+    - name: Clean up test account
+      wallix.bastion.device_localdomain_account:
+        device_name: "{{ test_device }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Clean up test device
+      wallix.bastion.device:
+        device_name: "{{ test_device }}"
+        state: absent

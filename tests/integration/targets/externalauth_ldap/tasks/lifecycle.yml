@@ -1,0 +1,184 @@
+---
+# Full lifecycle of wallix.bastion.externalauth_ldap against a real Bastion.
+# The server address is a documentation address: nothing is contacted, and no
+# authentication domain uses the test object.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_auth: ansible-test-ldap-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_passphrase: "{{ lookup('ansible.builtin.password', '/dev/null', length=16) }}"
+
+- name: Make a test certificate
+  ansible.builtin.include_tasks: certs.yml
+
+- name: LDAP lifecycle
+  block:
+    - name: Create LDAP server (check mode)
+      wallix.bastion.externalauth_ldap: &create
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.13
+        port: 389
+        timeout: 3
+        ldap_base: dc=example,dc=com
+        login_attribute: uid
+        cn_attribute: cn
+        is_starttls: true
+        login: cn=bind,dc=example,dc=com
+        password: ansible-test-password
+        ca_certificate: "{{ test_cert }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up LDAP server after check mode
+      wallix.bastion.externalauth_ldap_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.externalauths | length == 0
+          - "'password' not in create_check.externalauth"
+
+    - name: Create LDAP server
+      wallix.bastion.externalauth_ldap: *create
+      register: create
+
+    - name: Assert LDAP server was created without returning the password
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.externalauth.type == 'LDAP'
+          - create.externalauth.login == 'cn=bind,dc=example,dc=com'
+          - create.externalauth.ca_certificate is search('ansible-test.example.com')
+          - "'password' not in create.externalauth"
+
+    - name: Create LDAP server again
+      wallix.bastion.externalauth_ldap: *create
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.externalauth.id == create.externalauth.id
+
+    - name: Update options
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        port: 636
+        is_ssl: true
+        is_starttls: false
+        is_active_directory: true
+      diff: true
+      register: update
+
+    - name: Assert only those options changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['is_active_directory', 'is_ssl', 'is_starttls', 'port']
+          - update.externalauth.port == 636
+          - update.externalauth.ldap_base == 'dc=example,dc=com'
+          - update.externalauth.ca_certificate is search('ansible-test.example.com')
+          - update.diff.before.port == 389
+
+    - name: Add a client certificate
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        certificate: "{{ test_cert }}"
+        private_key: "{{ test_key }}"
+        passphrase: "{{ test_passphrase }}"
+      register: add_cert
+
+    - name: Add the client certificate again
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        certificate: "{{ test_cert }}"
+        private_key: "{{ test_key }}"
+        passphrase: "{{ test_passphrase }}"
+      register: add_cert_again
+
+    - name: Assert the certificate was set once
+      ansible.builtin.assert:
+        that:
+          - add_cert is changed
+          - add_cert.changed_fields == ['certificate', 'passphrase', 'private_key']
+          - add_cert.externalauth.certificate is search('ansible-test.example.com')
+          - "'private_key' not in add_cert.externalauth"
+          - add_cert_again is not changed
+
+    - name: Remove the client certificate and the CA certificate
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        certificate: ""
+        private_key: ""
+        ca_certificate: ""
+      register: remove_cert
+
+    - name: Assert the certificates were removed
+      ansible.builtin.assert:
+        that:
+          - remove_cert is changed
+          - remove_cert.changed_fields == ['ca_certificate', 'certificate', 'private_key']
+          - remove_cert.externalauth.certificate == ''
+          - remove_cert.externalauth.ca_certificate == ''
+
+    - name: Change the bind password
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        password: ansible-test-password-2
+        update_password: always
+      register: rotate
+
+    - name: Assert the password was sent
+      ansible.builtin.assert:
+        that:
+          - rotate is changed
+          - rotate.changed_fields == ['password']
+
+    - name: Switch to anonymous access
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        is_anonymous_access: true
+        login: ""
+        password: ""
+      register: anonymous
+
+    - name: Assert the bind credentials were removed
+      ansible.builtin.assert:
+        that:
+          - anonymous is changed
+          - anonymous.changed_fields == ['is_anonymous_access', 'login', 'password']
+          - anonymous.externalauth.is_anonymous_access
+          - anonymous.externalauth.login == ''
+
+    - name: Delete LDAP server
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete
+
+    - name: Delete LDAP server again
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up LDAP server after delete
+      wallix.bastion.externalauth_ldap_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_delete
+
+    - name: Assert LDAP server is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.externalauths | length == 0
+
+  always:
+    - name: Clean up test LDAP server
+      wallix.bastion.externalauth_ldap:
+        authentication_name: "{{ test_auth }}"
+        state: absent

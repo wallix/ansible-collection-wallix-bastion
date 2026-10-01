@@ -1,0 +1,186 @@
+---
+# Full lifecycle of wallix.bastion.certificate_authority against a real Bastion.
+# Connection comes from main.yml (module_defaults). Throwaway CAs are generated with openssl and ssh-keygen.
+- name: Pick a unique test certificate authority name
+  ansible.builtin.set_fact:
+    test_ca: ansible-test-ca-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Create a temporary directory for the test CAs
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: .ansible-test-ca
+  register: ca_dir
+  delegate_to: localhost
+
+- name: Certificate authority lifecycle
+  block:
+    - name: Generate two throwaway self-signed X.509 CAs
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN={{ test_ca }}-{{ item }}
+          -keyout {{ ca_dir.path }}/ca{{ item }}.key -out {{ ca_dir.path }}/ca{{ item }}.pem
+        creates: "{{ ca_dir.path }}/ca{{ item }}.pem"
+      loop: [1, 2]
+      delegate_to: localhost
+
+    - name: Generate a throwaway SSH CA key
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N '' -C {{ test_ca }} -f {{ ca_dir.path }}/ssh_ca
+        creates: "{{ ca_dir.path }}/ssh_ca.pub"
+      delegate_to: localhost
+
+    - name: Read the generated CAs
+      ansible.builtin.set_fact:
+        ca1_pem: "{{ lookup('ansible.builtin.file', ca_dir.path ~ '/ca1.pem', rstrip=false) }}"
+        ca2_pem: "{{ lookup('ansible.builtin.file', ca_dir.path ~ '/ca2.pem', rstrip=false) }}"
+        ssh_pub: "{{ lookup('ansible.builtin.file', ca_dir.path ~ '/ssh_ca.pub') }}"
+
+    - name: Create certificate authority (check mode)
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: X509
+        ca_certificate: "{{ ca1_pem }}"
+        description: Created by the wallix.bastion integration tests
+      check_mode: true
+      register: create_check
+
+    - name: Look up certificate authority after check mode
+      wallix.bastion.certificate_authority_info:
+        certificate_authority_name: "{{ test_ca }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.certificate_authorities | length == 0
+
+    - name: Try to create without a certificate
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: X509
+      register: no_cert
+      ignore_errors: true
+
+    - name: Assert the certificate is required on creation
+      ansible.builtin.assert:
+        that:
+          - no_cert is failed
+          - "'ca_certificate required' in no_cert.msg"
+
+    - name: Create certificate authority
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: X509
+        ca_certificate: "{{ ca1_pem }}"
+        description: Created by the wallix.bastion integration tests
+      register: create
+
+    - name: Assert certificate authority was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.certificate_authority.id | length > 0
+          - create.certificate_authority.ca_type == 'X509'
+          - create.certificate_authority.ca_certificate | trim == ca1_pem | trim
+
+    - name: Create certificate authority again, certificate without trailing newline
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: X509
+        ca_certificate: "{{ ca1_pem | trim }}"
+        description: Created by the wallix.bastion integration tests
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.certificate_authority.id == create.certificate_authority.id
+
+    - name: Replace the certificate
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_certificate: "{{ ca2_pem }}"
+      diff: true
+      register: update
+
+    - name: Assert only the certificate changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['ca_certificate']
+          - update.certificate_authority.ca_certificate | trim == ca2_pem | trim
+          - update.certificate_authority.description == 'Created by the wallix.bastion integration tests'
+          - update.diff.before.ca_certificate != update.diff.after.ca_certificate
+
+    - name: Turn it into an SSH certificate authority
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: SSH
+        ca_certificate: "{{ ssh_pub }}"
+      register: to_ssh
+
+    - name: Read the certificate authority back
+      wallix.bastion.certificate_authority_info:
+        certificate_authority_name: "{{ test_ca }}"
+      register: after_ssh
+
+    - name: Assert the type and key changed in place
+      ansible.builtin.assert:
+        that:
+          - to_ssh is changed
+          - to_ssh.changed_fields == ['ca_certificate', 'ca_type']
+          - after_ssh.certificate_authorities[0].id == create.certificate_authority.id
+          - after_ssh.certificate_authorities[0].ca_type == 'SSH'
+          - after_ssh.certificate_authorities[0].ca_certificate | trim == ssh_pub | trim
+
+    - name: Try an invalid certificate
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        ca_type: X509
+        ca_certificate: not a certificate
+      register: bad_cert
+      ignore_errors: true
+
+    - name: Assert the Bastion refused it
+      ansible.builtin.assert:
+        that:
+          - bad_cert is failed
+          - bad_cert.status == 400
+
+    - name: Delete certificate authority
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        state: absent
+      register: delete
+
+    - name: Delete certificate authority again
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up certificate authority after delete
+      wallix.bastion.certificate_authority_info:
+        certificate_authority_name: "{{ test_ca }}"
+      register: after_delete
+
+    - name: Assert certificate authority is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.certificate_authorities | length == 0
+
+  always:
+    - name: Clean up test certificate authority
+      wallix.bastion.certificate_authority:
+        certificate_authority_name: "{{ test_ca }}"
+        state: absent
+
+    - name: Remove the temporary CA directory
+      ansible.builtin.file:
+        path: "{{ ca_dir.path }}"
+        state: absent
+      delegate_to: localhost

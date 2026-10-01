@@ -1,0 +1,94 @@
+---
+# SMTP configuration: an appliance-wide singleton. The test changes sender_name only when no SMTP
+# credentials are configured (nothing write-only could be lost), and restores the exact original in always.
+- name: Read the original SMTP configuration
+  wallix.bastion.config_smtp_info:
+  register: original
+
+- name: Decide whether a live change can be restored exactly
+  ansible.builtin.set_fact:
+    smtp_orig: "{{ original.config_smtp }}"
+    smtp_live: "{{ original.config_smtp.user == '' and original.config_smtp.authentication_method == 'off' }}"
+    smtp_sender: ansible-test-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: SMTP configuration tests
+  block:
+    - name: Change the sender name (check mode)
+      wallix.bastion.config_smtp:
+        sender_name: "{{ smtp_sender }}"
+      check_mode: true
+      diff: true
+      register: change_check
+
+    - name: Read the SMTP configuration after check mode
+      wallix.bastion.config_smtp_info:
+      register: after_check
+
+    - name: Assert check mode reported the change without making it
+      ansible.builtin.assert:
+        that:
+          - change_check is changed
+          - change_check.changed_fields == ['sender_name']
+          - change_check.diff.after.sender_name == smtp_sender
+          - change_check.config_smtp.server == smtp_orig.server
+          - after_check.config_smtp == smtp_orig
+          - "'password' not in change_check.config_smtp"
+
+    - name: Same values as the Bastion
+      wallix.bastion.config_smtp:
+        server: "{{ smtp_orig.server }}"
+        port: "{{ smtp_orig.port }}"
+        sender_name: "{{ smtp_orig.sender_name }}"
+      register: same
+
+    - name: Assert unchanged values are not a change
+      ansible.builtin.assert:
+        that:
+          - same is not changed
+          - same.changed_fields == []
+
+    - name: Live change
+      when: smtp_live | bool
+      block:
+        - name: Change the sender name
+          wallix.bastion.config_smtp:
+            sender_name: "{{ smtp_sender }}"
+          diff: true
+          register: change
+
+        - name: Change the sender name again
+          wallix.bastion.config_smtp:
+            sender_name: "{{ smtp_sender }}"
+          register: change_again
+
+        - name: Assert only the sender name changed
+          ansible.builtin.assert:
+            that:
+              - change is changed
+              - change.changed_fields == ['sender_name']
+              - change.config_smtp.sender_name == smtp_sender
+              - change.config_smtp == smtp_orig | combine(dict(sender_name=smtp_sender))
+              - change_again is not changed
+
+  always:
+    - name: Restore the original SMTP configuration
+      wallix.bastion.config_smtp:
+        protocol: "{{ smtp_orig.protocol }}"
+        authentication_method: "{{ smtp_orig.authentication_method }}"
+        server: "{{ smtp_orig.server }}"
+        port: "{{ smtp_orig.port }}"
+        postmaster_email: "{{ smtp_orig.postmaster_email }}"
+        sender_name: "{{ smtp_orig.sender_name }}"
+        sender_email: "{{ smtp_orig.sender_email }}"
+        certificate_hash: "{{ smtp_orig.certificate_hash }}"
+        user: "{{ smtp_orig.user }}"
+      when: smtp_live | bool
+
+    - name: Read the SMTP configuration after restore
+      wallix.bastion.config_smtp_info:
+      register: restored
+
+    - name: Assert the SMTP configuration is exactly the original
+      ansible.builtin.assert:
+        that:
+          - restored.config_smtp == smtp_orig

@@ -1,0 +1,46 @@
+---
+# Encryption: changing it can make the secrets of the shared Bastion unrecoverable.
+# READ-ONLY AND CHECK MODE ONLY: every encryption task runs with check_mode, never write it here.
+- name: Read the original encryption state
+  wallix.bastion.encryption_info:
+  register: original
+
+- name: Encryption checks (check mode only)
+  check_mode: true
+  block:
+    - name: Ask for no passphrase (check mode)
+      wallix.bastion.encryption:
+        new_passphrase: ""
+      check_mode: true
+      register: no_passphrase
+
+    - name: Ask for a passphrase (check mode)
+      wallix.bastion.encryption:
+        new_passphrase: ansible-test-check-mode-only
+      check_mode: true
+      diff: true
+      register: with_passphrase
+
+    - name: Ask to rotate the passphrase (check mode)
+      wallix.bastion.encryption:
+        current_passphrase: ansible-test-old
+        new_passphrase: ansible-test-new
+      check_mode: true
+      register: rotate
+
+- name: Read the encryption state after the checks
+  wallix.bastion.encryption_info:
+  register: after
+
+- name: Assert check mode predicted changes from the state without making them
+  vars:
+    enc: "{{ original.encryption }}"
+  ansible.builtin.assert:
+    that:
+      - enc.seal_state in ['need_setup', 'sealed', 'unsealed']
+      - enc.enabled == (enc.seal_state == 'unsealed')
+      - no_passphrase.changed == (enc.seal_state == 'need_setup')
+      - with_passphrase.changed == (enc.seal_state == 'need_setup' or enc.encryption_mode == 'unprotected')
+      - (not with_passphrase.changed) or with_passphrase.encryption.encryption_mode == 'passphrase'
+      - rotate is changed
+      - after.encryption == original.encryption

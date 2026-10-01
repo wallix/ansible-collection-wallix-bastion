@@ -1,0 +1,218 @@
+---
+# Full lifecycle of wallix.bastion.authdomain_mapping against a real Bastion.
+# Connection comes from main.yml (module_defaults). Fixtures: an LDAP server created with raw API
+# calls (externalauth.yml, documentation address), an AD domain and a user group with a profile
+# (the Bastion only maps groups that have one), all ansible-test-*.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_domain: ansible-test-map-{{ test_suffix }}
+    test_auth: ansible-test-map-{{ test_suffix }}
+    test_group: ansible-test-map-{{ test_suffix }}
+    test_dn: CN=Bastion Admins,OU=Groups,DC=example,DC=com
+    test_dn2: CN=Bastion Operators,OU=Groups,DC=example,DC=com
+  vars:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Mapping lifecycle
+  block:
+    - name: Create the LDAP server
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: present
+        externalauth_name: "{{ test_auth }}"
+        externalauth_body:
+          type: LDAP
+          host: 192.0.2.10
+          port: 389
+          timeout: 5
+          ldap_base: dc=example,dc=com
+          cn_attribute: sAMAccountName
+          login_attribute: sAMAccountName
+          is_active_directory: true
+          is_anonymous_access: true
+
+    - name: Create the domain
+      wallix.bastion.authdomain_ad:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: corp.example.com
+        default_email_domain: example.com
+        default_language: en
+        external_auths: ["{{ test_auth }}"]
+
+    - name: Create the user group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        timeframes: [allthetime]
+        profile: user
+
+    - name: Map a group of an unknown domain
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}-nope"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+      register: no_domain
+      ignore_errors: true
+
+    - name: Unmap a group of an unknown domain
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}-nope"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+        state: absent
+      register: no_domain_absent
+
+    - name: Assert a missing domain fails, except when removing
+      ansible.builtin.assert:
+        that:
+          - no_domain is failed
+          - "'does not exist' in no_domain.msg"
+          - no_domain_absent is not changed
+
+    - name: Create mapping (check mode)
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up mappings after check mode
+      wallix.bastion.authdomain_mapping_info:
+        domain_name: "{{ test_domain }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.mappings == []
+
+    - name: Create mapping
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+      register: create
+
+    - name: Create mapping again, with another case
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn | lower }}"
+      register: create_again
+
+    - name: Map another directory group to the same user group
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn2 }}"
+      register: create_second
+
+    - name: Look up the mappings
+      wallix.bastion.authdomain_mapping_info:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+      register: info
+
+    - name: Look up one mapping
+      wallix.bastion.authdomain_mapping_info:
+        domain_name: "{{ test_domain }}"
+        external_group: "{{ test_dn2 }}"
+      register: info_one
+
+    - name: Look up the domain
+      wallix.bastion.authdomain_ad_info:
+        domain_name: "{{ test_domain }}"
+      register: info_domain
+
+    - name: Assert the mappings were created once each
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.mapping.id | length > 0
+          - create.mapping.domain == test_domain
+          - create.mapping.user_group == test_group
+          - create.mapping.external_group == test_dn
+          - create_again is not changed
+          - create_again.mapping.id == create.mapping.id
+          - create_second is changed
+          - create_second.mapping.id != create.mapping.id
+          - info.mappings | length == 2
+          - info_one.mappings | map(attribute='id') | list == [create_second.mapping.id]
+          - info_domain.authdomains[0].mappings | length == 2
+
+    - name: Delete the domain while it has mappings
+      wallix.bastion.authdomain_ad:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete_domain
+      ignore_errors: true
+
+    - name: Assert the Bastion refuses it
+      ansible.builtin.assert:
+        that:
+          - delete_domain is failed
+          - delete_domain.status == 409
+
+    - name: Delete the first mapping (check mode)
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete the first mapping
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+        state: absent
+      register: delete
+
+    - name: Delete the first mapping again
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ test_dn }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up the mappings after delete
+      wallix.bastion.authdomain_mapping_info:
+        domain_name: "{{ test_domain }}"
+      register: after_delete
+
+    - name: Assert only the first mapping was deleted
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.mappings | map(attribute='id') | list == [create_second.mapping.id]
+
+  always:
+    - name: Clean up the mappings
+      wallix.bastion.authdomain_mapping:
+        domain_name: "{{ test_domain }}"
+        user_group: "{{ test_group }}"
+        external_group: "{{ item }}"
+        state: absent
+      loop: ["{{ test_dn }}", "{{ test_dn2 }}"]
+
+    - name: Clean up the domain
+      wallix.bastion.authdomain_ad:
+        domain_name: "{{ test_domain }}"
+        state: absent
+
+    - name: Clean up the user group
+      wallix.bastion.usergroup:
+        group_name: "{{ test_group }}"
+        state: absent
+
+    - name: Clean up the LDAP server
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: absent
+        externalauth_name: "{{ test_auth }}"

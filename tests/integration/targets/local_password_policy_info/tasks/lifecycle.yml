@@ -1,0 +1,26 @@
+---
+# Read-only test of wallix.bastion.local_password_policy_info against a real Bastion.
+- name: Get the default local password policy
+  wallix.bastion.local_password_policy_info:
+    password_policy_name: default
+  register: default_policy
+
+- name: List every local password policy
+  wallix.bastion.local_password_policy_info:
+  register: all_policies
+
+- name: Get a policy that does not exist
+  wallix.bastion.local_password_policy_info:
+    password_policy_name: ansible-test-no-such-policy
+  register: no_policy
+
+- name: Assert policies are returned
+  ansible.builtin.assert:
+    that:
+      - default_policy is not changed
+      - default_policy.local_password_policies | length == 1
+      - default_policy.local_password_policies[0].password_policy_name == 'default'
+      - default_policy.local_password_policies[0].password_min_length is number
+      - default_policy.local_password_policies[0].forbidden_passwords | length > 0
+      - "'default' in all_policies.local_password_policies | map(attribute='password_policy_name')"
+      - no_policy.local_password_policies == []

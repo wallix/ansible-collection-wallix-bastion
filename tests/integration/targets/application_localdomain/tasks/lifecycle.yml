@@ -1,0 +1,161 @@
+---
+# Full lifecycle of wallix.bastion.application_localdomain against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_app: ansible-test-appld-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-admin
+
+- name: Application local domain lifecycle
+  module_defaults:
+    wallix.bastion.application_localdomain:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+    wallix.bastion.application_localdomain_info:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+  block:
+    - name: Create parent application
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+
+    - name: Create local domain (check mode)
+      wallix.bastion.application_localdomain:
+        description: Created by ansible-test
+      check_mode: true
+      register: create_check
+
+    - name: Look up local domain after check mode
+      wallix.bastion.application_localdomain_info:
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.localdomains | length == 0
+
+    - name: Create local domain with an admin account
+      wallix.bastion.application_localdomain:
+        admin_account: "{{ test_account }}"
+      register: with_admin
+      ignore_errors: true
+
+    - name: Assert the admin account is refused on creation
+      ansible.builtin.assert:
+        that:
+          - with_admin is failed
+          - "'admin_account cannot be set when creating' in with_admin.msg"
+
+    - name: Create local domain
+      wallix.bastion.application_localdomain:
+        description: Created by ansible-test
+      register: create
+
+    - name: Create local domain again
+      wallix.bastion.application_localdomain:
+        description: Created by ansible-test
+      register: create_again
+
+    - name: Assert local domain was created once
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.localdomain.id | length > 0
+          - create.localdomain.description == 'Created by ansible-test'
+          - create.localdomain.admin_account is none
+          - create_again is not changed
+          - create_again.changed_fields == []
+
+    - name: Create the admin account
+      wallix.bastion.application_localdomain_account:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+
+    - name: Set the admin account
+      wallix.bastion.application_localdomain:
+        admin_account: "{{ test_account }}"
+      register: set_admin
+
+    - name: Set the admin account again
+      wallix.bastion.application_localdomain:
+        admin_account: "{{ test_account }}"
+      register: set_admin_again
+
+    - name: Look up local domain after update
+      wallix.bastion.application_localdomain_info:
+      register: after_update
+
+    - name: Assert update changed only the admin account
+      ansible.builtin.assert:
+        that:
+          - set_admin is changed
+          - set_admin.changed_fields == ['admin_account']
+          - set_admin_again is not changed
+          - after_update.localdomains[0].admin_account == test_account
+          - after_update.localdomains[0].description == 'Created by ansible-test'
+
+    - name: List the local domains of the application
+      wallix.bastion.application_localdomain_info:
+        domain_name: "{{ omit }}"
+      register: all_domains
+
+    - name: Assert the local domain is listed
+      ansible.builtin.assert:
+        that:
+          - all_domains.localdomains | map(attribute='domain_name') | list == [test_domain]
+
+    - name: Remove the admin account
+      wallix.bastion.application_localdomain_account:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Delete local domain (check mode)
+      wallix.bastion.application_localdomain:
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete local domain
+      wallix.bastion.application_localdomain:
+        state: absent
+      register: delete
+
+    - name: Delete local domain again
+      wallix.bastion.application_localdomain:
+        state: absent
+      register: delete_again
+
+    - name: Look up local domain after delete
+      wallix.bastion.application_localdomain_info:
+      register: after_delete
+
+    - name: Assert delete removed the local domain and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.localdomains | length == 0
+
+  always:
+    # The Bastion refuses to delete an application that still has accounts.
+    - name: Clean up test account
+      wallix.bastion.application_localdomain_account:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Clean up test application and its local domains
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        state: absent

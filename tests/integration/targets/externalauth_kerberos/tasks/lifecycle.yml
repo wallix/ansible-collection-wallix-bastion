@@ -1,0 +1,170 @@
+---
+# Full lifecycle of wallix.bastion.externalauth_kerberos against a real Bastion.
+# The KDC address is a documentation address: nothing is contacted, and no
+# authentication domain uses the test object.
+# The keytabs are dummy test keytabs (one aes256 entry with a constant key) for
+# HTTP/bastion.example.com and HTTP/bastion2.example.com in the EXAMPLE.COM realm.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_auth: ansible-test-krb-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_keytab: BQIAAABXAAIAC0VYQU1QTEUuQ09NAARIVFRQABNiYXN0aW9uLmV4YW1wbGUuY29tAAAAAQAAAAABABIAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB
+    test_keytab2: BQIAAABYAAIAC0VYQU1QTEUuQ09NAARIVFRQABRiYXN0aW9uMi5leGFtcGxlLmNvbQAAAAEAAAAAAQASACACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg==
+
+- name: Kerberos lifecycle
+  block:
+    - name: Create Kerberos authentication (check mode)
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.12
+        port: 88
+        ker_dom_controller: EXAMPLE.COM
+        keytab: "{{ test_keytab }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up Kerberos authentication after check mode
+      wallix.bastion.externalauth_kerberos_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.externalauths | length == 0
+
+    - name: Create Kerberos authentication
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.12
+        port: 88
+        ker_dom_controller: EXAMPLE.COM
+        keytab: "{{ test_keytab }}"
+      register: create
+
+    - name: Assert Kerberos authentication was created without returning the keytab
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.externalauth.type == 'KERBEROS'
+          - not create.externalauth.kerberos_password
+          - "'keytab' not in create.externalauth"
+          - create.externalauth.principal_list[0] is search('HTTP/bastion.example.com@EXAMPLE.COM')
+
+    - name: Create Kerberos authentication again
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.12
+        port: 88
+        ker_dom_controller: EXAMPLE.COM
+        keytab: "{{ test_keytab2 }}"
+        kerberos_password: false
+      register: create_again
+
+    - name: Assert second create is a no-op (the keytab is only sent on creation)
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.externalauth.principal_list[0] is search('HTTP/bastion.example.com@')
+
+    - name: Update one option
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        description: updated
+      diff: true
+      register: update
+
+    - name: Assert only the description changed
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['description']
+          - update.externalauth.description == 'updated'
+          - update.externalauth.ker_dom_controller == 'EXAMPLE.COM'
+
+    - name: Replace the keytab
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        keytab: "{{ test_keytab2 }}"
+        update_password: always
+      register: rotate
+
+    - name: Assert the new keytab was stored
+      ansible.builtin.assert:
+        that:
+          - rotate is changed
+          - rotate.changed_fields == ['keytab']
+          - rotate.externalauth.principal_list[0] is search('HTTP/bastion2.example.com@EXAMPLE.COM')
+
+    - name: Try to switch to password mode
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        kerberos_password: true
+      register: switch
+      ignore_errors: true
+
+    - name: Assert kerberos_password cannot be changed
+      ansible.builtin.assert:
+        that:
+          - switch is failed
+          - "'kerberos_password cannot be changed' in switch.msg"
+
+    - name: Delete Kerberos authentication
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete
+
+    - name: Create a password-mode Kerberos authentication
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.12
+        port: 88
+        ker_dom_controller: EXAMPLE.COM
+        keytab: "{{ test_keytab }}"
+        kerberos_password: true
+      register: create_pw
+
+    - name: Look up the password-mode authentication
+      wallix.bastion.externalauth_kerberos_info:
+        authentication_name: "{{ test_auth }}"
+      register: info_pw
+
+    - name: Assert it has the KERBEROS-PASSWORD type
+      ansible.builtin.assert:
+        that:
+          - create_pw is changed
+          - create_pw.externalauth.type == 'KERBEROS-PASSWORD'
+          - info_pw.externalauths[0].kerberos_password
+          - "'keytab' not in info_pw.externalauths[0]"
+
+    - name: Delete password-mode Kerberos authentication
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_pw
+
+    - name: Delete Kerberos authentication again
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up Kerberos authentication after delete
+      wallix.bastion.externalauth_kerberos_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_delete
+
+    - name: Assert Kerberos authentication is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_pw is changed
+          - delete_again is not changed
+          - after_delete.externalauths | length == 0
+
+  always:
+    - name: Clean up test Kerberos authentication
+      wallix.bastion.externalauth_kerberos:
+        authentication_name: "{{ test_auth }}"
+        state: absent

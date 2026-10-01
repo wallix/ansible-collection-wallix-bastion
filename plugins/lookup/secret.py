@@ -129,9 +129,9 @@ options:
       - name: WALLIX_CSRF_ENABLED
     vars:
       - name: wallix_bastion_csrf_enabled
-  timeout:
+  bastion_timeout:
     description:
-      - Timeout in seconds of each HTTP request.
+      - Timeout in seconds of each HTTP request to the Bastion API.
     type: int
     default: 30
     vars:

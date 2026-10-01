@@ -1,0 +1,148 @@
+---
+# Full lifecycle of wallix.bastion.externalauth_saml against a real Bastion.
+# The identity provider is a made-up one at idp.example.com: nothing is contacted,
+# and no authentication domain uses the test object.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_auth: ansible-test-saml-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_passphrase: "{{ lookup('ansible.builtin.password', '/dev/null', length=16) }}"
+
+- name: Make a test certificate
+  ansible.builtin.include_tasks: certs.yml
+
+- name: Build minimal identity provider metadata
+  ansible.builtin.set_fact:
+    test_metadata: "{{ lookup('ansible.builtin.template', 'idp_metadata.xml.j2') }}"
+
+- name: SAML lifecycle
+  block:
+    - name: Create SAML identity provider (check mode)
+      wallix.bastion.externalauth_saml: &create
+        authentication_name: "{{ test_auth }}"
+        idp_metadata: "{{ test_metadata }}"
+        timeout: 30
+        claim_customization:
+          username: uid
+          email: mail
+      check_mode: true
+      register: create_check
+
+    - name: Look up SAML identity provider after check mode
+      wallix.bastion.externalauth_saml_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.externalauths | length == 0
+
+    - name: Create SAML identity provider
+      wallix.bastion.externalauth_saml: *create
+      register: create
+
+    - name: Assert SAML identity provider was created with the service provider details
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.externalauth.type == 'SAML'
+          - create.externalauth.idp_entity_id == 'https://idp.example.com/saml'
+          - create.externalauth.saml_request_url == 'https://idp.example.com/saml/sso'
+          - "create.externalauth.claim_customization == {'username': 'uid', 'email': 'mail'}"
+          - create.externalauth.sp_metadata is search('EntityDescriptor')
+          - create.externalauth.sp_entity_id | length > 0
+
+    - name: Create SAML identity provider again
+      wallix.bastion.externalauth_saml: *create
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+
+    - name: Replace the claim mapping
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        claim_customization:
+          username: uid
+          group: memberOf
+      diff: true
+      register: update
+
+    - name: Assert the mapping was replaced and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['claim_customization']
+          - "update.externalauth.claim_customization == {'username': 'uid', 'group': 'memberOf'}"
+          - update.externalauth.timeout == 30.0
+          - update.diff.before.claim_customization.email == 'mail'
+
+    - name: Add a signing certificate
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        certificate: "{{ test_cert }}"
+        private_key: "{{ test_key }}"
+        passphrase: "{{ test_passphrase }}"
+      register: add_cert
+
+    - name: Add the signing certificate again
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        certificate: "{{ test_cert }}"
+        private_key: "{{ test_key }}"
+        passphrase: "{{ test_passphrase }}"
+      register: add_cert_again
+
+    - name: Assert the certificate was set once
+      ansible.builtin.assert:
+        that:
+          - add_cert is changed
+          - add_cert.externalauth.certificate is search('ansible-test.example.com')
+          - "'private_key' not in add_cert.externalauth"
+          - add_cert_again is not changed
+
+    - name: Remove the signing certificate
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        certificate: ""
+        private_key: ""
+      register: remove_cert
+
+    - name: Assert the certificate was removed
+      ansible.builtin.assert:
+        that:
+          - remove_cert is changed
+          - remove_cert.externalauth.certificate == ''
+
+    - name: Delete SAML identity provider
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete
+
+    - name: Delete SAML identity provider again
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up SAML identity provider after delete
+      wallix.bastion.externalauth_saml_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_delete
+
+    - name: Assert SAML identity provider is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.externalauths | length == 0
+
+  always:
+    - name: Clean up test SAML identity provider
+      wallix.bastion.externalauth_saml:
+        authentication_name: "{{ test_auth }}"
+        state: absent

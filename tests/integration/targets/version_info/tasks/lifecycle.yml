@@ -1,0 +1,22 @@
+---
+# Read-only test of wallix.bastion.version_info against a real Bastion.
+- name: Get the version
+  wallix.bastion.version_info:
+  register: result
+
+- name: Get the version in check mode
+  wallix.bastion.version_info:
+  check_mode: true
+  register: result_check
+
+- name: Assert the version is returned
+  ansible.builtin.assert:
+    that:
+      - result is not changed
+      - result.version.version is match('v3\.')
+      - result.version.version_decimal is number
+      - result.version.wab_version | length > 0
+      - result.version.wab_version_decimal >= 10
+      - result.version.wab_version_hotfix is match(result.version.wab_version | regex_escape)
+      - result.version.wab_complete_version is match(result.version.wab_version_hotfix | regex_escape)
+      - result_check.version == result.version

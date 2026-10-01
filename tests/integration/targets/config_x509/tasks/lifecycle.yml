@@ -1,0 +1,50 @@
+---
+# X.509 configuration: changing it restarts the HTTPS listener and can lock out the API key of the tests.
+# READ-ONLY AND CHECK MODE ONLY: every config_x509 task runs with check_mode, never write it here.
+- name: Read the original X.509 configuration
+  wallix.bastion.config_x509_info:
+  register: original
+
+- name: X.509 configuration checks (check mode only)
+  check_mode: true
+  block:
+    - name: Install a certificate (check mode)
+      wallix.bastion.config_x509:
+        server_public_key: "{{ x509_test_cert }}"
+        server_private_key: not-a-real-key-check-mode-only
+        enable: false
+      check_mode: true
+      diff: true
+      register: install_check
+
+    - name: Remove the configuration (check mode)
+      wallix.bastion.config_x509:
+        state: absent
+      check_mode: true
+      register: absent_check
+
+    - name: Give an invalid certificate (check mode)
+      wallix.bastion.config_x509:
+        server_public_key: not a certificate
+        server_private_key: not-a-real-key-check-mode-only
+      check_mode: true
+      register: invalid
+      ignore_errors: true
+
+- name: Read the X.509 configuration after the checks
+  wallix.bastion.config_x509_info:
+  register: after
+
+- name: Assert check mode predicted changes without making them
+  ansible.builtin.assert:
+    that:
+      - original.config_x509.server_public_key | length > 0
+      - "'server_private_key' not in original.config_x509"
+      - install_check is changed
+      - "'server_public_key' in install_check.changed_fields"
+      - install_check.diff.after.server_public_key == '/CN=bastion.test'
+      - "'server_private_key' not in install_check.config_x509"
+      - absent_check.changed == (not original.config_x509.default)
+      - invalid is failed
+      - "'server_public_key' in invalid.msg"
+      - after.config_x509 == original.config_x509

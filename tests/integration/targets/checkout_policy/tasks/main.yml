@@ -1,0 +1,14 @@
+---
+- name: Run tests with the connection from integration_config.yml
+  module_defaults:
+    group/wallix.bastion.bastion:
+      bastion_host: "{{ wallix_bastion_host | default(omit) }}"
+      bastion_port: "{{ wallix_bastion_port | default(omit) }}"
+      bastion_user: "{{ wallix_bastion_user | default(omit) }}"
+      bastion_password: "{{ wallix_bastion_password | default(omit) }}"
+      bastion_token: "{{ wallix_bastion_token | default(omit) }}"
+      api_version: "{{ wallix_bastion_api_version | default(omit) }}"
+      validate_certs: "{{ wallix_bastion_validate_certs | default(omit) }}"
+  block:
+    - name: Checkout policy lifecycle
+      ansible.builtin.include_tasks: lifecycle.yml

@@ -1,0 +1,150 @@
+---
+# Full lifecycle of wallix.bastion.notification against a real Bastion.
+# Connection comes from main.yml (module_defaults). The notification stays disabled and points at
+# example.com addresses, so nothing is ever sent.
+- name: Pick a unique test notification name
+  ansible.builtin.set_fact:
+    test_notification: ansible-test-notif-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: Notification lifecycle
+  block:
+    - name: Create notification (check mode)
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        description: Created by the wallix.bastion integration tests
+        enabled: false
+        type: email
+        destination: ansible-test@example.com
+        language: en
+        events: [raid_error, daily_reporting, filesystem_full]
+      check_mode: true
+      register: create_check
+
+    - name: Look up notification after check mode
+      wallix.bastion.notification_info:
+        notification_name: "{{ test_notification }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.notifications | length == 0
+
+    - name: Create notification
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        description: Created by the wallix.bastion integration tests
+        enabled: false
+        type: email
+        destination: ansible-test@example.com
+        language: en
+        events: [raid_error, daily_reporting, filesystem_full]
+      register: create
+
+    - name: Assert notification was created
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.notification.id | length > 0
+          - not create.notification.enabled
+          - create.notification.events | sort == ['daily_reporting', 'filesystem_full', 'raid_error']
+
+    - name: Create notification again, events reordered
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        description: Created by the wallix.bastion integration tests
+        enabled: false
+        type: email
+        destination: ansible-test@example.com
+        language: en
+        events: [filesystem_full, raid_error, daily_reporting]
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.notification.id == create.notification.id
+
+    - name: Remove an event and change the destination and language
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        destination: ansible-test@example.com,ansible-test2@example.com
+        language: fr
+        events: [raid_error, daily_reporting]
+      diff: true
+      register: update
+
+    - name: Assert the event was really removed and the rest kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['destination', 'events', 'language']
+          - update.notification.events | sort == ['daily_reporting', 'raid_error']
+          - update.notification.language == 'fr'
+          - update.notification.description == 'Created by the wallix.bastion integration tests'
+          - not update.notification.enabled
+          - update.diff.before.events | length == 3
+
+    - name: Remove every event
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        events: []
+      register: no_events
+
+    - name: Remove every event again
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        events: []
+      register: no_events_again
+
+    - name: Assert events are empty
+      ansible.builtin.assert:
+        that:
+          - no_events is changed
+          - no_events_again is not changed
+          - no_events.notification.events == []
+
+    - name: Create a notification without its required options
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}-missing"
+        enabled: false
+      register: missing
+      ignore_errors: true
+
+    - name: Assert the module refused it
+      ansible.builtin.assert:
+        that:
+          - missing is failed
+          - "'type, destination, language required' in missing.msg"
+
+    - name: Delete notification
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        state: absent
+      register: delete
+
+    - name: Delete notification again
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up notification after delete
+      wallix.bastion.notification_info:
+        notification_name: "{{ test_notification }}"
+      register: after_delete
+
+    - name: Assert notification is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.notifications | length == 0
+
+  always:
+    - name: Clean up test notification
+      wallix.bastion.notification:
+        notification_name: "{{ test_notification }}"
+        state: absent

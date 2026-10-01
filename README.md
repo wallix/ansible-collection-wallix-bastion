@@ -3,6 +3,8 @@
 `wallix.bastion` manages WALLIX Bastion objects through the Bastion REST API, with one module per
 object type. It follows the [`wallix/wallix-bastion` Terraform provider](https://github.com/wallix/terraform-provider-wallix-bastion):
 same objects, same field names, same connection settings and environment variables.
+Where the real API differs from the provider's documentation, the modules follow the API and their
+documentation says so.
 
 Every module:
 
@@ -53,25 +55,101 @@ Or with the Terraform provider's environment variables:
 | `api_version` | `WALLIX_BASTION_API_VERSION` | `v3.12` |
 | `validate_certs` | `WALLIX_BASTION_VALIDATE_CERTS`, or the inverse of `WALLIX_INSECURE_SKIP_VERIFY` | `true` |
 | `csrf_enabled` | `WALLIX_CSRF_ENABLED` | `true` |
+| `bastion_timeout` | | `30` |
 
 ## Modules
 
-| Object | Module | Read-only module | Terraform equivalent |
-|---|---|---|---|
-| Devices | `wallix.bastion.device` | `wallix.bastion.device_info` | `wallix-bastion_device` |
-| Services of a device | `wallix.bastion.device_service` | `wallix.bastion.device_service_info` | `wallix-bastion_device_service` |
-| Local domains of a device | `wallix.bastion.device_localdomain` | `wallix.bastion.device_localdomain_info` | `wallix-bastion_device_localdomain` |
-| Accounts of a device local domain | `wallix.bastion.device_localdomain_account` | `wallix.bastion.device_localdomain_account_info` | `wallix-bastion_device_localdomain_account` |
-| Password or SSH key of a device account | `wallix.bastion.device_localdomain_account_credential` | `wallix.bastion.device_localdomain_account_credential_info` | `wallix-bastion_device_localdomain_account_credential` |
-| Global domains | `wallix.bastion.domain` | `wallix.bastion.domain_info` | `wallix-bastion_domain` |
-| Accounts of a global domain | `wallix.bastion.domain_account` | `wallix.bastion.domain_account_info` | `wallix-bastion_domain_account` |
-| Password or SSH key of a global domain account | `wallix.bastion.domain_account_credential` | `wallix.bastion.domain_account_credential_info` | `wallix-bastion_domain_account_credential` |
-| Users | `wallix.bastion.user` | `wallix.bastion.user_info` | `wallix-bastion_user` |
-| User groups | `wallix.bastion.usergroup` | `wallix.bastion.usergroup_info` | `wallix-bastion_usergroup` |
-| Target groups | `wallix.bastion.targetgroup` | `wallix.bastion.targetgroup_info` | `wallix-bastion_targetgroup` |
-| Authorizations between a user group and a target group | `wallix.bastion.authorization` | `wallix.bastion.authorization_info` | `wallix-bastion_authorization` |
-| Timeframes | `wallix.bastion.timeframe` | `wallix.bastion.timeframe_info` | `wallix-bastion_timeframe` |
-| Connection policies | `wallix.bastion.connection_policy` | `wallix.bastion.connection_policy_info` | `wallix-bastion_connection_policy` |
+Every resource and data source of the Terraform provider has a module: `wallix.bastion.<name>` for
+the resource `wallix-bastion_<name>` and `wallix.bastion.<name>_info` for the data source.
+
+### Devices
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `device` | `device_info` | Manage devices on a WALLIX Bastion |
+| `device_service` | `device_service_info` | Manage services of a device on a WALLIX Bastion |
+| `device_localdomain` | `device_localdomain_info` | Manage local domains of a device on a WALLIX Bastion |
+| `device_localdomain_account` | `device_localdomain_account_info` | Manage accounts of a device local domain on a WALLIX Bastion |
+| `device_localdomain_account_credential` | `device_localdomain_account_credential_info` | Manage credentials of a device local domain account on a WALLIX Bastion |
+
+### Applications
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `application` | `application_info` | Manage applications on a WALLIX Bastion |
+| `application_localdomain` | `application_localdomain_info` | Manage local domains of an application on a WALLIX Bastion |
+| `application_localdomain_account` | `application_localdomain_account_info` | Manage accounts of an application local domain on a WALLIX Bastion |
+| `application_localdomain_account_credential` | `application_localdomain_account_credential_info` | Manage the password of an application local domain account on a WALLIX Bastion |
+
+### Global domains
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `domain` | `domain_info` | Manage global domains on a WALLIX Bastion |
+| `domain_account` | `domain_account_info` | Manage accounts of global domains on a WALLIX Bastion |
+| `domain_account_credential` | `domain_account_credential_info` | Manage credentials of global domain accounts on a WALLIX Bastion |
+
+### Users and access
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `user` | `user_info` | Manage users on a WALLIX Bastion |
+| `usergroup` | `usergroup_info` | Manage user groups on a WALLIX Bastion |
+| `targetgroup` | `targetgroup_info` | Manage target groups on a WALLIX Bastion |
+| `authorization` | `authorization_info` | Manage authorizations on a WALLIX Bastion |
+| `profile` | `profile_info` | Manage user profiles on a WALLIX Bastion |
+| `timeframe` | `timeframe_info` | Manage timeframes on a WALLIX Bastion |
+
+### Policies
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `connection_policy` | `connection_policy_info` | Manage connection policies on a WALLIX Bastion |
+| `checkout_policy` | `checkout_policy_info` | Manage checkout policies on a WALLIX Bastion |
+| `passwordchangepolicy` | `passwordchangepolicy_info` | Manage password change policies on a WALLIX Bastion |
+
+### Authentication
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `authdomain_ad` | `authdomain_ad_info` | Manage Active Directory authentication domains on a WALLIX Bastion |
+| `authdomain_azuread` | `authdomain_azuread_info` | Manage Microsoft Entra ID (Azure AD) authentication domains on a WALLIX Bastion |
+| `authdomain_ldap` | `authdomain_ldap_info` | Manage LDAP authentication domains on a WALLIX Bastion |
+| `authdomain_saml` | `authdomain_saml_info` | Manage SAML authentication domains on a WALLIX Bastion |
+| `authdomain_mapping` | `authdomain_mapping_info` | Map directory groups to user groups on a WALLIX Bastion |
+| `externalauth_kerberos` | `externalauth_kerberos_info` | Manage Kerberos external authentications on a WALLIX Bastion |
+| `externalauth_ldap` | `externalauth_ldap_info` | Manage LDAP external authentications on a WALLIX Bastion |
+| `externalauth_radius` | `externalauth_radius_info` | Manage RADIUS external authentications on a WALLIX Bastion |
+| `externalauth_saml` | `externalauth_saml_info` | Manage SAML external authentications on a WALLIX Bastion |
+| `externalauth_tacacs` | `externalauth_tacacs_info` | Manage TACACS+ external authentications on a WALLIX Bastion |
+
+### API keys
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `apikey` | `apikey_info` | Manage API keys on a WALLIX Bastion |
+| `apikey_v2` | `apikey_v2_info` | Manage API keys with a profile on a WALLIX Bastion |
+
+### Appliance
+
+| Module | Read-only module | Description |
+|---|---|---|
+| `cluster` | `cluster_info` | Manage clusters on a WALLIX Bastion |
+| `certificate_authority` | `certificate_authority_info` | Manage certificate authorities on a WALLIX Bastion |
+| `notification` | `notification_info` | Manage notifications on a WALLIX Bastion |
+| `connection_message` | `connection_message_info` | Set the connection messages of a WALLIX Bastion |
+| `config_smtp` | `config_smtp_info` | Manage the SMTP configuration of a WALLIX Bastion |
+| `config_wsm` | `config_wsm_info` | Manage the Web Session Manager configuration of a WALLIX Bastion |
+| `config_x509` | `config_x509_info` | Manage the X.509 configuration of a WALLIX Bastion |
+| `encryption` | `encryption_info` | Set up or change the encryption passphrase of a WALLIX Bastion |
+
+### Read-only
+
+| Module | Description |
+|---|---|
+| `configoption_info` | Get configuration options from a WALLIX Bastion |
+| `local_password_policy_info` | Get local password policies from a WALLIX Bastion |
+| `version_info` | Get the version of a WALLIX Bastion |
 
 Secrets:
 

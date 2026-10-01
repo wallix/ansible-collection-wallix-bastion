@@ -1,0 +1,151 @@
+---
+# Full lifecycle of wallix.bastion.apikey against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+# Safety: the tests authenticate with an API key. Only the key named test_key, created here, is changed
+# or deleted, and only after checking its id is the one this test created.
+- name: Pick a unique test API key name
+  ansible.builtin.set_fact:
+    test_key: ansible-test-apikey-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: API key lifecycle
+  block:
+    - name: Create API key (check mode)
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up API key after check mode
+      wallix.bastion.apikey_info:
+        apikey_name: "{{ test_key }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it or returning a key
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - create_check.apikey.apikey is not defined
+          - after_check.apikeys | length == 0
+
+    - name: Create API key
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+      register: create
+      no_log: true
+
+    - name: Assert API key was created and its value returned
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.apikey.id | length > 0
+          - create.apikey.apikey_name == test_key
+          - create.apikey.apikey | length > 20
+          - "'*' not in create.apikey.apikey"
+          - create.apikey.ip_limitation == ''
+
+    - name: Use the new key (read-only)
+      wallix.bastion.apikey_info:
+        bastion_token: "{{ create.apikey.apikey }}"
+        bastion_password: "{{ omit }}"
+        apikey_name: "{{ test_key }}"
+      register: with_new_key
+
+    - name: Assert the new key authenticates
+      ansible.builtin.assert:
+        that:
+          - with_new_key.apikeys | length == 1
+          - with_new_key.apikeys[0].id == create.apikey.id
+          - with_new_key.apikeys[0].apikey is not defined
+
+    - name: Create API key again
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+      register: create_again
+
+    - name: Assert second create is a no-op and does not return the key
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.apikey.id == create.apikey.id
+          - create_again.apikey.apikey is not defined
+
+    - name: Restrict the key to other addresses
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+        ip_limitation: 192.0.2.1,192.0.2.2
+      diff: true
+      register: update
+
+    - name: Assert the IP limitation changed
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['ip_limitation']
+          - update.apikey.id == create.apikey.id
+          - update.apikey.ip_limitation == '192.0.2.1,192.0.2.2'
+          - update.apikey.apikey is not defined
+          - update.diff.before.ip_limitation == ''
+
+    - name: Use the key from an address it is not allowed from
+      wallix.bastion.apikey_info:
+        bastion_token: "{{ create.apikey.apikey }}"
+        bastion_password: "{{ omit }}"
+        apikey_name: "{{ test_key }}"
+      register: limited
+      ignore_errors: true
+
+    - name: Assert the IP limitation is enforced
+      ansible.builtin.assert:
+        that:
+          - limited is failed
+          - limited.status == 401
+
+    - name: Set the IP limitation again
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+        ip_limitation: 192.0.2.1,192.0.2.2
+      register: update_again
+
+    - name: Look up the key before deleting it
+      wallix.bastion.apikey_info:
+        apikey_name: "{{ test_key }}"
+      register: before_delete
+
+    - name: Assert it is still the key this test created
+      ansible.builtin.assert:
+        that:
+          - update_again is not changed
+          - before_delete.apikeys | length == 1
+          - before_delete.apikeys[0].id == create.apikey.id
+          - before_delete.apikeys[0].apikey is not defined
+
+    - name: Delete API key
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      register: delete
+
+    - name: Delete API key again
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up API key after delete
+      wallix.bastion.apikey_info:
+        apikey_name: "{{ test_key }}"
+      register: after_delete
+
+    - name: Assert API key is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.apikeys | length == 0
+
+  always:
+    - name: Clean up test API key
+      wallix.bastion.apikey:
+        apikey_name: "{{ test_key }}"
+        state: absent
+      when: test_key is match('ansible-test-')

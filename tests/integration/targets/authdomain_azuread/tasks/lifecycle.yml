@@ -1,0 +1,135 @@
+---
+# wallix.bastion.authdomain_azuread against a real Bastion. Connection comes from main.yml.
+# The Bastion signs in to Microsoft Entra ID when an AzureAD domain is created, which needs a
+# real tenant: creation is only tested in check mode. The SAML identity provider the domains
+# need is created with raw API calls (externalauth.yml) and points at example.com.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_domain: ansible-test-entra-{{ test_suffix }}
+    test_saml_domain: ansible-test-saml-{{ test_suffix }}
+    test_idp1: ansible-test-idp1-{{ test_suffix }}
+    test_saml_body:
+      type: SAML
+      timeout: 10
+      claim_customization:
+        username: email
+      idp_metadata: |-
+        <?xml version="1.0"?>
+        <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com/saml">
+          <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+            <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.com/sso"/>
+          </md:IDPSSODescriptor>
+        </md:EntityDescriptor>
+  vars:
+    test_suffix: "{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}"
+
+- name: Authentication domain lifecycle
+  block:
+    - name: Create the SAML identity provider
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: present
+        externalauth_name: "{{ test_idp1 }}"
+        externalauth_body: "{{ test_saml_body }}"
+
+    - name: Create domain (check mode)
+      wallix.bastion.authdomain_azuread:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: corp.onmicrosoft.com
+        default_email_domain: example.com
+        default_language: en
+        external_auths: ["{{ test_idp1 }}"]
+        label: Sign in with Microsoft
+        client_id: 00000000-0000-0000-0000-000000000001
+        entity_id: 00000000-0000-0000-0000-000000000002
+        client_secret: not-a-real-secret
+      check_mode: true
+      diff: true
+      register: create_check
+
+    - name: Look up domain after check mode
+      wallix.bastion.authdomain_azuread_info:
+        domain_name: "{{ test_domain }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it or showing the secret
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - create_check.authdomain.client_id == '00000000-0000-0000-0000-000000000001'
+          - "'client_secret' not in create_check.authdomain"
+          - "'client_secret' not in create_check.diff.after"
+          - after_check.authdomains | length == 0
+
+    - name: Create domain without the Entra ID application
+      wallix.bastion.authdomain_azuread:
+        domain_name: "{{ test_domain }}"
+        auth_domain_name: corp.onmicrosoft.com
+        default_email_domain: example.com
+        default_language: en
+        external_auths: ["{{ test_idp1 }}"]
+        label: Sign in with Microsoft
+      register: create_missing
+      ignore_errors: true
+
+    - name: Assert client_id and entity_id are required
+      ansible.builtin.assert:
+        that:
+          - create_missing is failed
+          - "'client_id, entity_id required' in create_missing.msg"
+
+    - name: Create a SAML domain
+      wallix.bastion.authdomain_saml:
+        domain_name: "{{ test_saml_domain }}"
+        auth_domain_name: sso.example.com
+        default_email_domain: example.com
+        default_language: en
+        external_auths: ["{{ test_idp1 }}"]
+        label: Sign in
+
+    - name: Manage the SAML domain as an AzureAD domain
+      wallix.bastion.authdomain_azuread:
+        domain_name: "{{ test_saml_domain }}"
+        label: wrong type
+      register: wrong_type
+      ignore_errors: true
+
+    - name: Look up the SAML domain as an AzureAD domain
+      wallix.bastion.authdomain_azuread_info:
+        domain_name: "{{ test_saml_domain }}"
+      register: info_wrong
+
+    - name: List the AzureAD domains
+      wallix.bastion.authdomain_azuread_info:
+      register: info_all
+
+    - name: Assert the type is checked
+      ansible.builtin.assert:
+        that:
+          - wrong_type is failed
+          - "'type SAML' in wrong_type.msg"
+          - info_wrong.authdomains == []
+          - info_all.authdomains | selectattr('domain_name', 'equalto', test_saml_domain) | list == []
+
+    - name: Delete an AzureAD domain that does not exist
+      wallix.bastion.authdomain_azuread:
+        domain_name: "{{ test_domain }}"
+        state: absent
+      register: delete
+
+    - name: Assert nothing was deleted
+      ansible.builtin.assert:
+        that:
+          - delete is not changed
+
+  always:
+    - name: Clean up the SAML domain
+      wallix.bastion.authdomain_saml:
+        domain_name: "{{ test_saml_domain }}"
+        state: absent
+
+    - name: Clean up the SAML identity provider
+      ansible.builtin.include_tasks: externalauth.yml
+      vars:
+        externalauth_state: absent
+        externalauth_name: "{{ test_idp1 }}"

@@ -1,0 +1,52 @@
+---
+# Creates (externalauth_state=present, with externalauth_body) or deletes (absent) the external
+# authentication externalauth_name with raw API calls, so this target does not depend on the
+# wallix.bastion.externalauth_* modules. Only ansible-test-* objects are ever deleted.
+- name: Check the external authentication is a test object
+  ansible.builtin.assert:
+    that: externalauth_name is match('ansible-test-')
+    quiet: true
+
+- name: Build the API connection
+  ansible.builtin.set_fact:
+    _api: "https://{{ wallix_bastion_host }}:{{ wallix_bastion_port | default(443) }}/api/{{ wallix_bastion_api_version | default('v3.12') }}"
+    _api_headers: "{{ {'X-Auth-User': wallix_bastion_user, 'X-Auth-Key': wallix_bastion_token} if wallix_bastion_token is defined else {} }}"
+
+- name: Create external authentication {{ externalauth_name }}
+  ansible.builtin.uri:
+    url: "{{ _api }}/externalauths"
+    method: POST
+    headers: "{{ _api_headers }}"
+    url_username: "{{ omit if wallix_bastion_token is defined else wallix_bastion_user }}"
+    url_password: "{{ omit if wallix_bastion_token is defined else wallix_bastion_password }}"
+    force_basic_auth: "{{ wallix_bastion_token is not defined }}"
+    validate_certs: "{{ wallix_bastion_validate_certs | default(true) }}"
+    body_format: json
+    body: "{{ externalauth_body | combine({'authentication_name': externalauth_name}) }}"
+    status_code: [200, 204]
+  when: externalauth_state == 'present'
+
+- name: Find external authentication {{ externalauth_name }}
+  ansible.builtin.uri:
+    url: "{{ _api }}/externalauths?q=authentication_name={{ externalauth_name | urlencode }}"
+    headers: "{{ _api_headers }}"
+    url_username: "{{ omit if wallix_bastion_token is defined else wallix_bastion_user }}"
+    url_password: "{{ omit if wallix_bastion_token is defined else wallix_bastion_password }}"
+    force_basic_auth: "{{ wallix_bastion_token is not defined }}"
+    validate_certs: "{{ wallix_bastion_validate_certs | default(true) }}"
+  register: _found
+  when: externalauth_state == 'absent'
+
+- name: Delete external authentication {{ externalauth_name }}
+  ansible.builtin.uri:
+    url: "{{ _api }}/externalauths/{{ _matches[0].id }}"
+    method: DELETE
+    headers: "{{ _api_headers }}"
+    url_username: "{{ omit if wallix_bastion_token is defined else wallix_bastion_user }}"
+    url_password: "{{ omit if wallix_bastion_token is defined else wallix_bastion_password }}"
+    force_basic_auth: "{{ wallix_bastion_token is not defined }}"
+    validate_certs: "{{ wallix_bastion_validate_certs | default(true) }}"
+    status_code: [200, 204, 404]
+  vars:
+    _matches: "{{ _found.json | default([]) | selectattr('authentication_name', 'equalto', externalauth_name) | list }}"
+  when: externalauth_state == 'absent' and _matches | length == 1

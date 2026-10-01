@@ -1,0 +1,41 @@
+---
+# Read-only test of wallix.bastion.configoption_info against a real Bastion.
+- name: List every configuration
+  wallix.bastion.configoption_info:
+  register: all_configs
+
+- name: Get the RDP proxy configuration by name
+  wallix.bastion.configoption_info:
+    config_id: rdpproxy
+  register: rdpproxy
+
+- name: Get the same configuration by id, one section only
+  wallix.bastion.configoption_info:
+    config_id: "{{ rdpproxy.configoptions[0].id }}"
+    options_list: [globals]
+  register: globals
+
+- name: Ask for a section that does not exist
+  wallix.bastion.configoption_info:
+    config_id: rdpproxy
+    options_list: [ansible-test-no-such-section]
+  register: no_section
+
+- name: Ask for a configuration that does not exist
+  wallix.bastion.configoption_info:
+    config_id: ansible-test-no-such-config
+  register: no_config
+
+- name: Assert configurations are returned
+  ansible.builtin.assert:
+    that:
+      - all_configs is not changed
+      - "'rdpproxy' in all_configs.configoptions | map(attribute='config_name')"
+      - rdpproxy.configoptions | length == 1
+      - rdpproxy.configoptions[0].config_name == 'rdpproxy'
+      - rdpproxy.configoptions[0].options | length > 1
+      - globals.configoptions[0].config_name == 'rdpproxy'
+      - globals.configoptions[0].options | map(attribute='name') | list == ['globals']
+      - "'port' in globals.configoptions[0].options[0].options | map(attribute='name')"
+      - no_section.configoptions[0].options == []
+      - no_config.configoptions == []

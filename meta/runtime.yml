@@ -2,32 +2,89 @@
 requires_ansible: ">=2.16.0"
 action_groups:
   bastion:
+    - apikey
+    - apikey_info
+    - apikey_v2
+    - apikey_v2_info
+    - application
+    - application_info
+    - application_localdomain
+    - application_localdomain_account
+    - application_localdomain_account_credential
+    - application_localdomain_account_credential_info
+    - application_localdomain_account_info
+    - application_localdomain_info
+    - authdomain_ad
+    - authdomain_ad_info
+    - authdomain_azuread
+    - authdomain_azuread_info
+    - authdomain_ldap
+    - authdomain_ldap_info
+    - authdomain_mapping
+    - authdomain_mapping_info
+    - authdomain_saml
+    - authdomain_saml_info
+    - authorization
+    - authorization_info
+    - certificate_authority
+    - certificate_authority_info
+    - checkout_policy
+    - checkout_policy_info
+    - cluster
+    - cluster_info
+    - config_smtp
+    - config_smtp_info
+    - config_wsm
+    - config_wsm_info
+    - config_x509
+    - config_x509_info
+    - configoption_info
+    - connection_message
+    - connection_message_info
+    - connection_policy
+    - connection_policy_info
     - device
     - device_info
-    - device_service
-    - device_service_info
     - device_localdomain
-    - device_localdomain_info
     - device_localdomain_account
-    - device_localdomain_account_info
     - device_localdomain_account_credential
     - device_localdomain_account_credential_info
+    - device_localdomain_account_info
+    - device_localdomain_info
+    - device_service
+    - device_service_info
     - domain
-    - domain_info
     - domain_account
-    - domain_account_info
     - domain_account_credential
     - domain_account_credential_info
+    - domain_account_info
+    - domain_info
+    - encryption
+    - encryption_info
+    - externalauth_kerberos
+    - externalauth_kerberos_info
+    - externalauth_ldap
+    - externalauth_ldap_info
+    - externalauth_radius
+    - externalauth_radius_info
+    - externalauth_saml
+    - externalauth_saml_info
+    - externalauth_tacacs
+    - externalauth_tacacs_info
+    - local_password_policy_info
+    - notification
+    - notification_info
+    - passwordchangepolicy
+    - passwordchangepolicy_info
+    - profile
+    - profile_info
+    - secret
+    - targetgroup
+    - targetgroup_info
+    - timeframe
+    - timeframe_info
     - user
     - user_info
     - usergroup
     - usergroup_info
-    - targetgroup
-    - targetgroup_info
-    - authorization
-    - authorization_info
-    - connection_policy
-    - connection_policy_info
-    - timeframe
-    - timeframe_info
-    - secret
+    - version_info

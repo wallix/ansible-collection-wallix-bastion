@@ -1,0 +1,35 @@
+---
+# Throw-away self-signed certificate and encrypted key for the tests, made on the controller.
+- name: Create a temporary directory for the test certificate
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: .ansible-test
+  register: cert_dir
+  delegate_to: localhost
+
+- name: Generate a self-signed test certificate and key
+  ansible.builtin.command:
+    argv: [openssl, req, -x509, -newkey, rsa:2048, -nodes, -days, "30", -subj, /CN=ansible-test.example.com,
+           -keyout, "{{ cert_dir.path }}/key.pem", -out, "{{ cert_dir.path }}/cert.pem"]
+  changed_when: true
+  delegate_to: localhost
+
+- name: Encrypt the test key with a passphrase
+  ansible.builtin.command:
+    argv: [openssl, rsa, -aes256, -in, "{{ cert_dir.path }}/key.pem", -out, "{{ cert_dir.path }}/key_enc.pem",
+           -passout, "pass:{{ test_passphrase }}"]
+  changed_when: true
+  no_log: true
+  delegate_to: localhost
+
+- name: Read the test certificate and key
+  ansible.builtin.set_fact:
+    test_cert: "{{ lookup('ansible.builtin.file', cert_dir.path ~ '/cert.pem') }}"
+    test_key: "{{ lookup('ansible.builtin.file', cert_dir.path ~ '/key_enc.pem') }}"
+  no_log: true
+
+- name: Remove the temporary directory
+  ansible.builtin.file:
+    path: "{{ cert_dir.path }}"
+    state: absent
+  delegate_to: localhost

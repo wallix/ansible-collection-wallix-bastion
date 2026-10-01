@@ -103,3 +103,193 @@ releases:
         name: secret
         namespace: null
     release_date: '2026-10-01'
+  1.1.0:
+    changes:
+      breaking_changes:
+      - The connection option ``timeout`` (HTTP timeout of each request to the Bastion
+        API) is renamed ``bastion_timeout``, like the other connection options. The
+        name ``timeout`` is now free for the API field of the same name, for example
+        in ``wallix.bastion.externalauth_ldap``.
+      release_summary: 'Complete coverage of the wallix-bastion Terraform provider:
+        a module for every resource and an ``_info`` module for every data source.'
+    fragments:
+    - 1.1.0.yml
+    - connection-timeout-rename.yml
+    modules:
+    - description: Manage API keys on a WALLIX Bastion
+      name: apikey
+      namespace: ''
+    - description: Get API keys from a WALLIX Bastion
+      name: apikey_info
+      namespace: ''
+    - description: Manage API keys with a profile on a WALLIX Bastion
+      name: apikey_v2
+      namespace: ''
+    - description: Get API keys from a WALLIX Bastion, with their profile
+      name: apikey_v2_info
+      namespace: ''
+    - description: Manage applications on a WALLIX Bastion
+      name: application
+      namespace: ''
+    - description: Get applications from a WALLIX Bastion
+      name: application_info
+      namespace: ''
+    - description: Manage local domains of an application on a WALLIX Bastion
+      name: application_localdomain
+      namespace: ''
+    - description: Manage accounts of an application local domain on a WALLIX Bastion
+      name: application_localdomain_account
+      namespace: ''
+    - description: Manage the password of an application local domain account on a
+        WALLIX Bastion
+      name: application_localdomain_account_credential
+      namespace: ''
+    - description: Get the credentials of an application local domain account from
+        a WALLIX Bastion
+      name: application_localdomain_account_credential_info
+      namespace: ''
+    - description: Get the accounts of an application local domain from a WALLIX Bastion
+      name: application_localdomain_account_info
+      namespace: ''
+    - description: Get the local domains of an application from a WALLIX Bastion
+      name: application_localdomain_info
+      namespace: ''
+    - description: Manage Active Directory authentication domains on a WALLIX Bastion
+      name: authdomain_ad
+      namespace: ''
+    - description: Get Active Directory authentication domains from a WALLIX Bastion
+      name: authdomain_ad_info
+      namespace: ''
+    - description: Manage Microsoft Entra ID (Azure AD) authentication domains on
+        a WALLIX Bastion
+      name: authdomain_azuread
+      namespace: ''
+    - description: Get Microsoft Entra ID (Azure AD) authentication domains from a
+        WALLIX Bastion
+      name: authdomain_azuread_info
+      namespace: ''
+    - description: Manage LDAP authentication domains on a WALLIX Bastion
+      name: authdomain_ldap
+      namespace: ''
+    - description: Get LDAP authentication domains from a WALLIX Bastion
+      name: authdomain_ldap_info
+      namespace: ''
+    - description: Map directory groups to user groups on a WALLIX Bastion
+      name: authdomain_mapping
+      namespace: ''
+    - description: Get the group mappings of an authentication domain from a WALLIX
+        Bastion
+      name: authdomain_mapping_info
+      namespace: ''
+    - description: Manage SAML authentication domains on a WALLIX Bastion
+      name: authdomain_saml
+      namespace: ''
+    - description: Get SAML authentication domains from a WALLIX Bastion
+      name: authdomain_saml_info
+      namespace: ''
+    - description: Manage certificate authorities on a WALLIX Bastion
+      name: certificate_authority
+      namespace: ''
+    - description: Get certificate authorities from a WALLIX Bastion
+      name: certificate_authority_info
+      namespace: ''
+    - description: Manage checkout policies on a WALLIX Bastion
+      name: checkout_policy
+      namespace: ''
+    - description: Get checkout policies from a WALLIX Bastion
+      name: checkout_policy_info
+      namespace: ''
+    - description: Manage clusters on a WALLIX Bastion
+      name: cluster
+      namespace: ''
+    - description: Get clusters from a WALLIX Bastion
+      name: cluster_info
+      namespace: ''
+    - description: Manage the SMTP configuration of a WALLIX Bastion
+      name: config_smtp
+      namespace: ''
+    - description: Get the SMTP configuration of a WALLIX Bastion
+      name: config_smtp_info
+      namespace: ''
+    - description: Manage the Web Session Manager configuration of a WALLIX Bastion
+      name: config_wsm
+      namespace: ''
+    - description: Get the Web Session Manager configuration of a WALLIX Bastion
+      name: config_wsm_info
+      namespace: ''
+    - description: Manage the X.509 configuration of a WALLIX Bastion
+      name: config_x509
+      namespace: ''
+    - description: Get the X.509 configuration of a WALLIX Bastion
+      name: config_x509_info
+      namespace: ''
+    - description: Get configuration options from a WALLIX Bastion
+      name: configoption_info
+      namespace: ''
+    - description: Set the connection messages of a WALLIX Bastion
+      name: connection_message
+      namespace: ''
+    - description: Get the connection messages of a WALLIX Bastion
+      name: connection_message_info
+      namespace: ''
+    - description: Set up or change the encryption passphrase of a WALLIX Bastion
+      name: encryption
+      namespace: ''
+    - description: Get the encryption state of a WALLIX Bastion
+      name: encryption_info
+      namespace: ''
+    - description: Manage Kerberos external authentications on a WALLIX Bastion
+      name: externalauth_kerberos
+      namespace: ''
+    - description: Get Kerberos external authentications from a WALLIX Bastion
+      name: externalauth_kerberos_info
+      namespace: ''
+    - description: Manage LDAP external authentications on a WALLIX Bastion
+      name: externalauth_ldap
+      namespace: ''
+    - description: Get LDAP external authentications from a WALLIX Bastion
+      name: externalauth_ldap_info
+      namespace: ''
+    - description: Manage RADIUS external authentications on a WALLIX Bastion
+      name: externalauth_radius
+      namespace: ''
+    - description: Get RADIUS external authentications from a WALLIX Bastion
+      name: externalauth_radius_info
+      namespace: ''
+    - description: Manage SAML external authentications on a WALLIX Bastion
+      name: externalauth_saml
+      namespace: ''
+    - description: Get SAML external authentications from a WALLIX Bastion
+      name: externalauth_saml_info
+      namespace: ''
+    - description: Manage TACACS+ external authentications on a WALLIX Bastion
+      name: externalauth_tacacs
+      namespace: ''
+    - description: Get TACACS+ external authentications from a WALLIX Bastion
+      name: externalauth_tacacs_info
+      namespace: ''
+    - description: Get local password policies from a WALLIX Bastion
+      name: local_password_policy_info
+      namespace: ''
+    - description: Manage notifications on a WALLIX Bastion
+      name: notification
+      namespace: ''
+    - description: Get notifications from a WALLIX Bastion
+      name: notification_info
+      namespace: ''
+    - description: Manage password change policies on a WALLIX Bastion
+      name: passwordchangepolicy
+      namespace: ''
+    - description: Get password change policies from a WALLIX Bastion
+      name: passwordchangepolicy_info
+      namespace: ''
+    - description: Manage user profiles on a WALLIX Bastion
+      name: profile
+      namespace: ''
+    - description: Get user profiles from a WALLIX Bastion
+      name: profile_info
+      namespace: ''
+    - description: Get the version of a WALLIX Bastion
+      name: version_info
+      namespace: ''
+    release_date: '2026-10-01'

@@ -1,0 +1,144 @@
+---
+# Full lifecycle of wallix.bastion.application_localdomain_account_credential against a real Bastion.
+# Connection comes from main.yml (module_defaults).
+- name: Pick unique test names and a throwaway password
+  ansible.builtin.set_fact:
+    test_app: ansible-test-appcred-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+    test_domain: ansible-test-local
+    test_account: ansible-test-admin
+    test_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=20, chars=['ascii_letters', 'digits']) }}-Aa1"
+  no_log: true
+
+- name: Application local domain account credential lifecycle
+  module_defaults:
+    wallix.bastion.application_localdomain_account_credential:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+      type: password
+    wallix.bastion.application_localdomain_account_credential_info:
+      application_name: "{{ test_app }}"
+      domain_name: "{{ test_domain }}"
+      account_name: "{{ test_account }}"
+  block:
+    - name: Create parent application
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        connection_policy: WEBAPP
+        category: web_application
+        application_url: https://example.com/login
+
+    - name: Create parent local domain
+      wallix.bastion.application_localdomain:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+
+    - name: Create parent account
+      wallix.bastion.application_localdomain_account:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        account_login: admin
+
+    - name: Create password (check mode)
+      wallix.bastion.application_localdomain_account_credential:
+        password: "{{ test_password }}"
+      check_mode: true
+      register: create_check
+
+    - name: Look up credentials after check mode
+      wallix.bastion.application_localdomain_account_credential_info:
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.credentials | length == 0
+
+    - name: Create password
+      wallix.bastion.application_localdomain_account_credential:
+        password: "{{ test_password }}"
+      register: create
+
+    - name: Assert password was created and is not returned
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.credential.id | length > 0
+          - create.credential.type == 'password'
+          - create.credential.password is not defined
+
+    - name: Create password again with another value
+      wallix.bastion.application_localdomain_account_credential:
+        password: "{{ test_password }}-other"
+      register: create_again
+
+    - name: Assert the password is only sent on creation by default
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.credential.id == create.credential.id
+
+    - name: Replace the password
+      wallix.bastion.application_localdomain_account_credential:
+        password: "{{ test_password }}-new"
+        update_password: always
+      register: replace
+
+    - name: Get the credentials
+      wallix.bastion.application_localdomain_account_credential_info:
+        type: password
+      register: info
+
+    - name: Assert the password was replaced in place
+      ansible.builtin.assert:
+        that:
+          - replace is changed
+          - replace.changed_fields == ['password']
+          - replace.credential.id == create.credential.id
+          - info.credentials | length == 1
+          - info.credentials[0].id == create.credential.id
+          - info.credentials[0].password is not defined
+
+    - name: Delete the password (check mode)
+      wallix.bastion.application_localdomain_account_credential:
+        state: absent
+      check_mode: true
+      register: delete_check
+
+    - name: Delete the password
+      wallix.bastion.application_localdomain_account_credential:
+        state: absent
+      register: delete
+
+    - name: Delete the password again
+      wallix.bastion.application_localdomain_account_credential:
+        state: absent
+      register: delete_again
+
+    - name: List the credentials after delete
+      wallix.bastion.application_localdomain_account_credential_info:
+      register: after_delete
+
+    - name: Assert the password is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete_check is changed
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.credentials | length == 0
+
+  always:
+    # The Bastion refuses to delete an application that still has accounts; credentials go with the account.
+    - name: Clean up test account
+      wallix.bastion.application_localdomain_account:
+        application_name: "{{ test_app }}"
+        domain_name: "{{ test_domain }}"
+        account_name: "{{ test_account }}"
+        state: absent
+
+    - name: Clean up test application and its local domains
+      wallix.bastion.application:
+        application_name: "{{ test_app }}"
+        state: absent

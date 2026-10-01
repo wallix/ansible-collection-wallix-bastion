@@ -1,0 +1,115 @@
+---
+# Update of wallix.bastion.connection_message against a real Bastion.
+# Connection comes from main.yml (module_defaults). Connection messages always exist and cannot be
+# deleted: the test changes the Russian message of the day and restores its exact original text.
+- name: Read the original message
+  wallix.bastion.connection_message_info:
+    message_name: motd_ru
+  register: original
+
+- name: Remember the original text
+  ansible.builtin.set_fact:
+    original_message: "{{ original.connection_messages[0].message }}"
+    test_message: |
+      ansible-test: message set by the wallix.bastion integration tests.
+      It is restored at the end of the test.
+
+- name: Connection message update
+  block:
+    - name: Read every message
+      wallix.bastion.connection_message_info:
+      register: all_messages
+
+    - name: Assert every message is listed
+      ansible.builtin.assert:
+        that:
+          - all_messages.connection_messages | length == 10
+          - "'motd_ru' in all_messages.connection_messages | map(attribute='message_name')"
+
+    - name: Set the message (check mode)
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message }}"
+      check_mode: true
+      register: set_check
+
+    - name: Read the message after check mode
+      wallix.bastion.connection_message_info:
+        message_name: motd_ru
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - set_check is changed
+          - after_check.connection_messages[0].message == original_message
+
+    - name: Set the message
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message }}"
+      diff: true
+      register: set_message
+
+    - name: Set the message again
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message }}"
+      register: set_again
+
+    - name: Assert the message was set once
+      ansible.builtin.assert:
+        that:
+          - set_message is changed
+          - set_message.changed_fields == ['message_text']
+          - set_message.connection_message.message == test_message
+          - set_message.diff.before.message == original_message
+          - set_again is not changed
+
+    - name: Set the message without its trailing new line
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message | trim }}"
+      register: no_newline
+
+    - name: Set it again without its trailing new line
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message | trim }}"
+      register: no_newline_again
+
+    - name: Assert the text is kept exactly
+      ansible.builtin.assert:
+        that:
+          - no_newline is changed
+          - no_newline_again is not changed
+          - no_newline.connection_message.message == test_message | trim
+
+    - name: Try to delete a message
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ test_message }}"
+        state: absent
+      register: absent
+      ignore_errors: true
+
+    - name: Assert deletion is refused
+      ansible.builtin.assert:
+        that:
+          - absent is failed
+
+  always:
+    - name: Restore the original message
+      wallix.bastion.connection_message:
+        message_name: motd_ru
+        message_text: "{{ original_message }}"
+
+    - name: Read the restored message
+      wallix.bastion.connection_message_info:
+        message_name: motd_ru
+      register: restored
+
+    - name: Assert the original text is back
+      ansible.builtin.assert:
+        that:
+          - restored.connection_messages[0].message == original_message

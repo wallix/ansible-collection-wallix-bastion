@@ -44,7 +44,7 @@ CONNECTION_ARGUMENT_SPEC = dict(
     api_version=dict(type="str"),
     validate_certs=dict(type="bool"),
     csrf_enabled=dict(type="bool"),
-    timeout=dict(type="int", default=30),
+    bastion_timeout=dict(type="int", default=30),
 )
 
 _TRUE = ("1", "true", "yes", "on")
@@ -119,8 +119,8 @@ def resolve_connection(params):
             insecure = _env_bool("WALLIX_INSECURE_SKIP_VERIFY")
             env = not insecure if insecure is not None else True
         conn["validate_certs"] = env
-    if conn.get("timeout") is None:
-        conn["timeout"] = 30
+    if conn.get("bastion_timeout") is None:
+        conn["bastion_timeout"] = 30
     return conn
 
 
@@ -143,7 +143,7 @@ def validate_connection(conn):
 class BastionClient:
     def __init__(self, bastion_host, bastion_user, bastion_password=None, bastion_token=None,
                  bastion_port=443, api_version=DEFAULT_API_VERSION, validate_certs=True,
-                 csrf_enabled=True, timeout=30, **kwargs):
+                 csrf_enabled=True, bastion_timeout=30, **kwargs):
         self.host = bastion_host
         self.port = bastion_port
         self.user = bastion_user
@@ -152,7 +152,7 @@ class BastionClient:
         self.api_version = api_version
         self.validate_certs = validate_certs
         self.csrf_enabled = csrf_enabled
-        self.timeout = timeout
+        self.timeout = bastion_timeout
 
         self._cookies = CookieJar()
         self._csrf_token = None

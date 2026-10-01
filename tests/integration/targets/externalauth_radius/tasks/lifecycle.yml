@@ -1,0 +1,150 @@
+---
+# Full lifecycle of wallix.bastion.externalauth_radius against a real Bastion.
+# The server address is a documentation address: nothing is contacted, and no
+# authentication domain uses the test object.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_auth: ansible-test-radius-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: RADIUS lifecycle
+  block:
+    - name: Create RADIUS server (check mode)
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.10
+        port: 1812
+        timeout: 3
+        secret: ansible-test-secret
+      check_mode: true
+      register: create_check
+
+    - name: Look up RADIUS server after check mode
+      wallix.bastion.externalauth_radius_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.externalauths | length == 0
+          - "'secret' not in create_check.externalauth"
+
+    - name: Create RADIUS server
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.10
+        port: 1812
+        timeout: 3
+        secret: ansible-test-secret
+        description: Created by the wallix.bastion integration tests
+      register: create
+
+    - name: Assert RADIUS server was created without returning the secret
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.externalauth.id | length > 0
+          - create.externalauth.type == 'RADIUS'
+          - create.externalauth.timeout == 3.0
+          - "'secret' not in create.externalauth"
+
+    - name: Create RADIUS server again
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.10
+        port: 1812
+        timeout: 3
+        secret: ansible-test-secret
+        description: Created by the wallix.bastion integration tests
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+          - create_again.externalauth.id == create.externalauth.id
+
+    - name: Update one option
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        timeout: 5.5
+      diff: true
+      register: update
+
+    - name: Assert only the timeout changed and other options were kept
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['timeout']
+          - update.externalauth.timeout == 5.5
+          - update.externalauth.host == '192.0.2.10'
+          - update.externalauth.description == 'Created by the wallix.bastion integration tests'
+          - update.diff.before.timeout == 3.0
+
+    - name: Rotate the secret
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        secret: ansible-test-secret-2
+        update_password: always
+      register: rotate
+
+    - name: Assert the secret was sent
+      ansible.builtin.assert:
+        that:
+          - rotate is changed
+          - rotate.changed_fields == ['secret']
+
+    - name: Manage it with the module of another type
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: wrong_type
+      ignore_errors: true
+
+    - name: Assert the other module refused it
+      ansible.builtin.assert:
+        that:
+          - wrong_type is failed
+          - "'type RADIUS' in wrong_type.msg"
+
+    - name: List RADIUS servers
+      wallix.bastion.externalauth_radius_info:
+      register: all_radius
+
+    - name: Assert the list only has RADIUS servers and no secret
+      ansible.builtin.assert:
+        that:
+          - test_auth in all_radius.externalauths | map(attribute='authentication_name')
+          - all_radius.externalauths | map(attribute='type') | unique == ['RADIUS']
+          - all_radius.externalauths | selectattr('secret', 'defined') | length == 0
+
+    - name: Delete RADIUS server
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete
+
+    - name: Delete RADIUS server again
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up RADIUS server after delete
+      wallix.bastion.externalauth_radius_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_delete
+
+    - name: Assert RADIUS server is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.externalauths | length == 0
+
+  always:
+    - name: Clean up test RADIUS server
+      wallix.bastion.externalauth_radius:
+        authentication_name: "{{ test_auth }}"
+        state: absent

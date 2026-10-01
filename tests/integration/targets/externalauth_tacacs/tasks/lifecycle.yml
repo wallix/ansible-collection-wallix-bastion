@@ -1,0 +1,118 @@
+---
+# Full lifecycle of wallix.bastion.externalauth_tacacs against a real Bastion.
+# The server address is a documentation address: nothing is contacted, and no
+# authentication domain uses the test object.
+- name: Pick unique test names
+  ansible.builtin.set_fact:
+    test_auth: ansible-test-tacacs-{{ lookup('ansible.builtin.password', '/dev/null', length=8, chars=['ascii_lowercase', 'digits']) }}
+
+- name: TACACS+ lifecycle
+  block:
+    - name: Create TACACS+ server (check mode)
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.11
+        port: 49
+        secret: ansible-test-secret
+      check_mode: true
+      register: create_check
+
+    - name: Look up TACACS+ server after check mode
+      wallix.bastion.externalauth_tacacs_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_check
+
+    - name: Assert check mode reported a change without making it
+      ansible.builtin.assert:
+        that:
+          - create_check is changed
+          - after_check.externalauths | length == 0
+
+    - name: Create TACACS+ server
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.11
+        port: 49
+        secret: ansible-test-secret
+      register: create
+
+    - name: Assert TACACS+ server was created without returning the secret
+      ansible.builtin.assert:
+        that:
+          - create is changed
+          - create.externalauth.type == 'TACACS+'
+          - create.externalauth.port == 49
+          - "'secret' not in create.externalauth"
+
+    - name: Create TACACS+ server again
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        host: 192.0.2.11
+        port: 49
+        secret: ansible-test-secret
+      register: create_again
+
+    - name: Assert second create is a no-op
+      ansible.builtin.assert:
+        that:
+          - create_again is not changed
+
+    - name: Update two options
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        description: updated
+        use_primary_auth_domain: true
+      diff: true
+      register: update
+
+    - name: Assert only those options changed
+      ansible.builtin.assert:
+        that:
+          - update is changed
+          - update.changed_fields == ['description', 'use_primary_auth_domain']
+          - update.externalauth.use_primary_auth_domain
+          - update.externalauth.host == '192.0.2.11'
+          - update.diff.before.description == ''
+
+    - name: Rotate the secret
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        secret: ansible-test-secret-2
+        update_password: always
+      register: rotate
+
+    - name: Assert the secret was sent
+      ansible.builtin.assert:
+        that:
+          - rotate is changed
+          - rotate.changed_fields == ['secret']
+
+    - name: Delete TACACS+ server
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete
+
+    - name: Delete TACACS+ server again
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        state: absent
+      register: delete_again
+
+    - name: Look up TACACS+ server after delete
+      wallix.bastion.externalauth_tacacs_info:
+        authentication_name: "{{ test_auth }}"
+      register: after_delete
+
+    - name: Assert TACACS+ server is gone and second delete is a no-op
+      ansible.builtin.assert:
+        that:
+          - delete is changed
+          - delete_again is not changed
+          - after_delete.externalauths | length == 0
+
+  always:
+    - name: Clean up test TACACS+ server
+      wallix.bastion.externalauth_tacacs:
+        authentication_name: "{{ test_auth }}"
+        state: absent
