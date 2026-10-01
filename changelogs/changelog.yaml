@@ -1,0 +1,105 @@
+ancestor: null
+releases:
+  1.0.0:
+    changes:
+      release_summary: 'First release of wallix.bastion, a rewrite of wallix.pam modeled
+        on the wallix-bastion Terraform provider: one idempotent module per Bastion
+        API object, with check mode and diff support.'
+    fragments:
+    - 1.0.0.yml
+    modules:
+    - description: Manage authorizations on a WALLIX Bastion
+      name: authorization
+      namespace: ''
+    - description: Get authorizations from a WALLIX Bastion
+      name: authorization_info
+      namespace: ''
+    - description: Manage connection policies on a WALLIX Bastion
+      name: connection_policy
+      namespace: ''
+    - description: Get connection policies from a WALLIX Bastion
+      name: connection_policy_info
+      namespace: ''
+    - description: Manage devices on a WALLIX Bastion
+      name: device
+      namespace: ''
+    - description: Get devices from a WALLIX Bastion
+      name: device_info
+      namespace: ''
+    - description: Manage local domains of a device on a WALLIX Bastion
+      name: device_localdomain
+      namespace: ''
+    - description: Manage accounts of a device local domain on a WALLIX Bastion
+      name: device_localdomain_account
+      namespace: ''
+    - description: Manage credentials of a device local domain account on a WALLIX
+        Bastion
+      name: device_localdomain_account_credential
+      namespace: ''
+    - description: Get the credentials of a device local domain account from a WALLIX
+        Bastion
+      name: device_localdomain_account_credential_info
+      namespace: ''
+    - description: Get the accounts of a device local domain from a WALLIX Bastion
+      name: device_localdomain_account_info
+      namespace: ''
+    - description: Get the local domains of a device from a WALLIX Bastion
+      name: device_localdomain_info
+      namespace: ''
+    - description: Manage services of a device on a WALLIX Bastion
+      name: device_service
+      namespace: ''
+    - description: Get the services of a device from a WALLIX Bastion
+      name: device_service_info
+      namespace: ''
+    - description: Manage global domains on a WALLIX Bastion
+      name: domain
+      namespace: ''
+    - description: Manage accounts of global domains on a WALLIX Bastion
+      name: domain_account
+      namespace: ''
+    - description: Manage credentials of global domain accounts on a WALLIX Bastion
+      name: domain_account_credential
+      namespace: ''
+    - description: Get credentials of a global domain account from a WALLIX Bastion
+      name: domain_account_credential_info
+      namespace: ''
+    - description: Get accounts of a global domain from a WALLIX Bastion
+      name: domain_account_info
+      namespace: ''
+    - description: Get global domains from a WALLIX Bastion
+      name: domain_info
+      namespace: ''
+    - description: Check out, extend or check in an account password on a WALLIX Bastion
+      name: secret
+      namespace: ''
+    - description: Manage target groups on a WALLIX Bastion
+      name: targetgroup
+      namespace: ''
+    - description: Get target groups from a WALLIX Bastion
+      name: targetgroup_info
+      namespace: ''
+    - description: Manage timeframes on a WALLIX Bastion
+      name: timeframe
+      namespace: ''
+    - description: Get timeframes from a WALLIX Bastion
+      name: timeframe_info
+      namespace: ''
+    - description: Manage users on a WALLIX Bastion
+      name: user
+      namespace: ''
+    - description: Get users from a WALLIX Bastion
+      name: user_info
+      namespace: ''
+    - description: Manage user groups on a WALLIX Bastion
+      name: usergroup
+      namespace: ''
+    - description: Get user groups from a WALLIX Bastion
+      name: usergroup_info
+      namespace: ''
+    plugins:
+      lookup:
+      - description: Check out account secrets from a WALLIX Bastion
+        name: secret
+        namespace: null
+    release_date: '2026-10-01'
