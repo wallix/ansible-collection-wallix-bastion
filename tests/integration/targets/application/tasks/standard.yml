@@ -99,6 +99,18 @@
         that:
           - create_again is not changed
 
+    - name: Try to set a login form option on a standard application
+      wallix.bastion.application:
+        allow_non_post_form: true
+      register: std_form
+      ignore_errors: true
+
+    - name: Assert login form options are refused outside web applications
+      ansible.builtin.assert:
+        that:
+          - std_form is failed
+          - "'can only be set on a web_application, not on a standard application' in std_form.msg"
+
     - name: Set a working directory
       wallix.bastion.application:
         paths:
