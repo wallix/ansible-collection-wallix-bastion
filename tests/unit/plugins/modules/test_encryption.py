@@ -110,7 +110,7 @@ def run(monkeypatch, module, check_mode=False, **params):
     return exc.value
 
 
-def setup(fake, **state):
+def seed_state(fake, **state):
     fake.set("encryption", state)
 
     def on_write(path, method, body):
@@ -120,7 +120,7 @@ def setup(fake, **state):
 
 
 def test_setup_when_needed(monkeypatch, fake):
-    setup(fake, seal_state="need_setup", encryption_mode="need_setup")
+    seed_state(fake, seal_state="need_setup", encryption_mode="need_setup")
     res = run(monkeypatch, encryption, new_passphrase="pass")
     assert res.result["changed"] and res.result["action"] == "setup"
     assert fake.writes() == [("PUT", "/api/v3.12/encryption", {"new_passphrase": "pass"})]
@@ -128,26 +128,26 @@ def test_setup_when_needed(monkeypatch, fake):
 
 
 def test_setup_check_mode(monkeypatch, fake):
-    setup(fake, seal_state="need_setup", encryption_mode="need_setup")
+    seed_state(fake, seal_state="need_setup", encryption_mode="need_setup")
     res = run(monkeypatch, encryption, check_mode=True, new_passphrase="")
     assert res.result["changed"] and res.result["encryption"]["encryption_mode"] == "unprotected"
     assert fake.writes() == []
 
 
 def test_protected_without_current_is_unchanged(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="passphrase")
+    seed_state(fake, seal_state="unsealed", encryption_mode="passphrase")
     res = run(monkeypatch, encryption, new_passphrase="pass")
     assert not res.result["changed"] and res.result["action"] == "none" and fake.writes() == []
 
 
 def test_unprotected_with_empty_passphrase_is_unchanged(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="unprotected")
+    seed_state(fake, seal_state="unsealed", encryption_mode="unprotected")
     assert not run(monkeypatch, encryption, new_passphrase="").result["changed"]
     assert fake.writes() == []
 
 
 def test_unprotected_gets_a_passphrase(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="unprotected")
+    seed_state(fake, seal_state="unsealed", encryption_mode="unprotected")
     res = run(monkeypatch, encryption, new_passphrase="pass")
     assert res.result["changed"] and fake.writes()[0][2] == {"new_passphrase": "pass"}
     assert res.result["diff"]["before"]["encryption_mode"] == "unprotected"
@@ -155,31 +155,31 @@ def test_unprotected_gets_a_passphrase(monkeypatch, fake):
 
 
 def test_unprotected_check_mode(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="unprotected")
+    seed_state(fake, seal_state="unsealed", encryption_mode="unprotected")
     res = run(monkeypatch, encryption, check_mode=True, new_passphrase="pass")
     assert res.result["changed"] and res.result["action"] == "change_passphrase" and fake.writes() == []
 
 
 def test_rotation(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="passphrase")
+    seed_state(fake, seal_state="unsealed", encryption_mode="passphrase")
     res = run(monkeypatch, encryption, current_passphrase="old", new_passphrase="new")
     assert res.result["changed"]
     assert fake.writes()[0][2] == {"passphrase": "old", "new_passphrase": "new"}
 
 
 def test_same_passphrase_is_unchanged(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="passphrase")
+    seed_state(fake, seal_state="unsealed", encryption_mode="passphrase")
     assert not run(monkeypatch, encryption, current_passphrase="p", new_passphrase="p").result["changed"]
 
 
 def test_sealed_fails(monkeypatch, fake):
-    setup(fake, seal_state="sealed", encryption_mode="passphrase")
+    seed_state(fake, seal_state="sealed", encryption_mode="passphrase")
     res = run(monkeypatch, encryption, current_passphrase="old", new_passphrase="new")
     assert res.failed and "sealed" in res.result["msg"] and fake.writes() == []
 
 
 def test_wrong_passphrase_fails(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="passphrase")
+    seed_state(fake, seal_state="unsealed", encryption_mode="passphrase")
     fake.put_status = 400
     res = run(monkeypatch, encryption, current_passphrase="bad", new_passphrase="new")
     assert res.failed and res.result["status"] == 400
@@ -187,13 +187,13 @@ def test_wrong_passphrase_fails(monkeypatch, fake):
 
 def test_v38_state(monkeypatch, fake):
     fake.api_version = "v3.8"
-    setup(fake, encryption="ready")
+    seed_state(fake, encryption="ready")
     res = run(monkeypatch, encryption, api_version="v3.8", new_passphrase="p")
     assert not res.result["changed"] and res.result["encryption"]["enabled"]
 
 
 def test_info(monkeypatch, fake):
-    setup(fake, seal_state="unsealed", encryption_mode="unprotected")
+    seed_state(fake, seal_state="unsealed", encryption_mode="unprotected")
     res = run(monkeypatch, encryption_info).result
     assert res["encryption"] == {"seal_state": "unsealed", "encryption_mode": "unprotected", "enabled": True}
     assert not res["changed"]
