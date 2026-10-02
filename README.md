@@ -160,7 +160,8 @@ Secrets:
 
 Set `no_log: true` on tasks that check out secrets: a module cannot hide its own output.
 
-Run `ansible-doc wallix.bastion.<module>` for the options of each module.
+The [documentation](docs/README.md) has a page per module with its options, examples and return
+values; `ansible-doc wallix.bastion.<module>` shows the same.
 
 ## Development
 
