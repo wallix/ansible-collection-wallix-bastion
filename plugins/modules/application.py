@@ -54,6 +54,29 @@ options:
       - URL of the application, for the V(web_application) and V(jumphost) categories.
       - Required when a V(web_application) is created.
     type: str
+  login_form_url:
+    description:
+      - URL of the login form the Bastion fills in with the account credentials, for the
+        V(web_application) category, when it differs from O(application_url).
+      - Use V("") to remove it.
+      - Not in the C(wallix-bastion_application) Terraform resource.
+    type: str
+    version_added: 1.2.0
+  login_button_selector:
+    description:
+      - CSS selector of the submit button of the login form, for the V(web_application) category.
+      - Use V("") to remove it.
+      - Not in the C(wallix-bastion_application) Terraform resource.
+    type: str
+    version_added: 1.2.0
+  allow_non_post_form:
+    description:
+      - Allow credentials injection in login forms that are not submitted with POST, for the
+        V(web_application) category.
+      - The Bastion uses V(false) when the application is created without it.
+      - Not in the C(wallix-bastion_application) Terraform resource.
+    type: bool
+    version_added: 1.2.0
   browser:
     description:
       - Browser used to open the application, for the V(jumphost) category.
@@ -150,6 +173,9 @@ EXAMPLES = r"""
     connection_policy: WEBAPP
     category: web_application
     application_url: https://intranet.example.com/login
+    login_form_url: https://intranet.example.com/sso/login
+    login_button_selector: "#login-submit"
+    allow_non_post_form: false
     tags:
       - key: env
         value: prod
@@ -204,6 +230,11 @@ REQUIRED_BY_CATEGORY = {
     "jumphost": ("application_url", "browser"),
 }
 
+# Login form options, only meaningful for web applications.
+WEB_FORM_FIELDS = ("login_form_url", "login_button_selector", "allow_non_post_form")
+# The Bastion stores "" as null for these: compare them as "".
+WEB_FORM_STRINGS = ("login_form_url", "login_button_selector")
+
 
 class ApplicationResource(BastionResource):
     def desired(self):
@@ -213,9 +244,20 @@ class ApplicationResource(BastionResource):
             desired["paths"] = [dict(p, working_dir=p.get("working_dir") or "") for p in desired["paths"]]
         return desired
 
+    def normalize(self, obj):
+        if obj and obj.get("category") == "web_application":
+            obj = dict(obj, **{f: obj[f] or "" for f in WEB_FORM_STRINGS if f in obj})
+        return obj
+
     def read(self):
         current = super(ApplicationResource, self).read()
         params = self.module.params
+        if params["state"] == "present":
+            category = (current or {}).get("category") or params.get("category") or "standard"
+            web_form = [f for f in WEB_FORM_FIELDS if params.get(f) is not None]
+            if web_form and category != "web_application":
+                self.module.fail_json(msg="%s can only be set on a web_application, not on a %s application" % (
+                    ", ".join(web_form), category))
         if current is None and params["state"] == "present":
             # Fail before writing anything, in check mode too, with the options the category needs.
             category = params.get("category") or "standard"
@@ -238,6 +280,9 @@ def main():
             connection_policy=dict(type="str"),
             category=dict(type="str", choices=["standard", "jumphost", "web_application"]),
             application_url=dict(type="str"),
+            login_form_url=dict(type="str"),
+            login_button_selector=dict(type="str"),
+            allow_non_post_form=dict(type="bool"),
             browser=dict(type="str"),
             browser_version=dict(type="str"),
             description=dict(type="str"),
@@ -271,8 +316,9 @@ def main():
         module,
         path="applications",
         name_field="application_name",
-        fields=("application_name", "connection_policy", "category", "application_url", "browser",
-                "browser_version", "description", "global_domains", "parameters", "paths", "target", "tags"),
+        fields=("application_name", "connection_policy", "category", "application_url", "login_form_url",
+                "login_button_selector", "allow_non_post_form", "browser", "browser_version", "description",
+                "global_domains", "parameters", "paths", "target", "tags"),
         set_fields=("global_domains", "paths", "tags"),
         result_key="application",
         required_on_create=("connection_policy",),

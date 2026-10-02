@@ -61,6 +61,7 @@ jobs:
           python-version: "3.12"
       - run: pip install ansible-core antsibull-changelog
       - run: antsibull-changelog lint
+      - run: python docs/generate_docs.py --check
       - run: ansible-galaxy collection build
       - uses: actions/upload-artifact@v4
         with:

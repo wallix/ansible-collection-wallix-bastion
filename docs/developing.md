@@ -17,6 +17,7 @@ For a resource `<name>`:
 | `tests/unit/plugins/modules/test_<name>.py` | Unit tests against `FakeBastion` |
 | `tests/integration/targets/<name>/` | `aliases` (`destructive`, `unsupported`), `tasks/main.yml` with `module_defaults`, `tasks/lifecycle.yml` |
 | `meta/runtime.yml` | Add both modules to `action_groups.bastion` |
+| `docs/modules/<name>.md`, `docs/modules/<name>_info.md` | Generated: add the module to `CATEGORIES` in `docs/generate_docs.py`, then run it |
 | `changelogs/fragments/` | Nothing for new modules: antsibull-changelog picks them up from `version_added` |
 
 `plugins/modules/device.py`, `device_info.py`, `tests/unit/plugins/modules/test_device.py` and
@@ -73,4 +74,11 @@ ansible-test sanity --docker
 ansible-test units --docker
 ansible-test integration <name> --allow-destructive --allow-unsupported
 ansible-lint
+python docs/generate_docs.py --check
 ```
+
+## Documentation
+
+`docs/modules/`, `docs/lookup/` and `docs/README.md` are generated from `DOCUMENTATION`,
+`EXAMPLES` and `RETURN` by `python docs/generate_docs.py` (it needs `ansible-doc`). Don't edit
+them: change the plugin and regenerate. CI fails when they are out of date.

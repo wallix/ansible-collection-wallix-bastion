@@ -136,6 +136,62 @@
           - after_empty.applications[0].global_domains == []
           - after_empty.applications[0].tags == []
 
+    - name: Set the login form options
+      wallix.bastion.application:
+        login_form_url: https://example.com/sso/login
+        login_button_selector: "#login-submit"
+        allow_non_post_form: true
+      register: form
+
+    - name: Set the login form options again
+      wallix.bastion.application:
+        login_form_url: https://example.com/sso/login
+        login_button_selector: "#login-submit"
+        allow_non_post_form: true
+      register: form_again
+
+    - name: Look up application after setting the login form
+      wallix.bastion.application_info:
+      register: form_info
+
+    - name: Assert the login form options were set and are idempotent
+      ansible.builtin.assert:
+        that:
+          - form is changed
+          - form.changed_fields == ['allow_non_post_form', 'login_button_selector', 'login_form_url']
+          - form_again is not changed
+          - form_info.applications[0].login_form_url == 'https://example.com/sso/login'
+          - form_info.applications[0].login_button_selector == '#login-submit'
+          - form_info.applications[0].allow_non_post_form
+          - form_info.applications[0].application_url == 'https://example.com/other'
+
+    - name: Remove the login form URL and button selector, disallow non-POST forms
+      wallix.bastion.application:
+        login_form_url: ""
+        login_button_selector: ""
+        allow_non_post_form: false
+      register: form_clear
+
+    - name: Remove them again
+      wallix.bastion.application:
+        login_form_url: ""
+        login_button_selector: ""
+        allow_non_post_form: false
+      register: form_clear_again
+
+    - name: Look up application after removing the login form
+      wallix.bastion.application_info:
+      register: form_clear_info
+
+    - name: Assert the values were removed and removing them again is a no-op
+      ansible.builtin.assert:
+        that:
+          - form_clear is changed
+          - form_clear_again is not changed
+          - form_clear_info.applications[0].login_form_url is none
+          - form_clear_info.applications[0].login_button_selector is none
+          - not form_clear_info.applications[0].allow_non_post_form
+
     - name: Try to change the category
       wallix.bastion.application:
         category: standard

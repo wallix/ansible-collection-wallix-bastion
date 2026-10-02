@@ -144,10 +144,12 @@ def test_update_replaces_lists_and_keeps_unset_options(monkeypatch, fake):
     assert res.result["changed"] and res.result["changed_fields"] == ["global_domains", "tags"]
     method, path, body = fake.writes()[0]
     assert (method, path) == ("PUT", "/api/v3.12/applications/%s" % obj["id"])
-    # The category is refused in a PUT; read-only and null fields are not sent back.
+    # The category is refused in a PUT; read-only fields are not sent back. The login form strings
+    # the Bastion returns as null are sent as "", which it stores as null again.
     assert body == {"application_name": "web", "connection_policy": "WEBAPP", "description": "",
-                    "application_url": "https://example.com", "global_domains": ["corp.local"],
-                    "tags": [{"key": "k1", "value": "v1"}]}
+                    "application_url": "https://example.com", "login_form_url": "",
+                    "login_button_selector": "", "allow_non_post_form": False,
+                    "global_domains": ["corp.local"], "tags": [{"key": "k1", "value": "v1"}]}
     assert fake.objects("applications")[0]["tags"] == [{"key": "k1", "value": "v1"}]
 
 
@@ -209,3 +211,50 @@ def test_info(monkeypatch, fake):
     assert [a["application_name"] for a in one["applications"]] == ["web"] and not one["changed"]
     assert len(run(monkeypatch, application_info).result["applications"]) == 2
     assert run(monkeypatch, application_info, application_name="nope").result["applications"] == []
+
+
+def test_create_web_application_with_login_form(monkeypatch, fake):
+    res = run(monkeypatch, application, application_name="web", connection_policy="WEBAPP",
+              category="web_application", application_url="https://example.com",
+              login_form_url="https://example.com/login", login_button_selector="#submit", allow_non_post_form=True)
+    assert res.result["changed"]
+    body = fake.writes()[0][2]
+    assert body["login_form_url"] == "https://example.com/login"
+    assert body["login_button_selector"] == "#submit"
+    assert body["allow_non_post_form"] is True
+
+
+def test_login_form_update(monkeypatch, fake):
+    fake.add("applications", dict(API_WEB, login_form_url="https://example.com/login", login_button_selector="#a"))
+    res = run(monkeypatch, application, application_name="web", login_button_selector="#b", allow_non_post_form=True)
+    assert res.result["changed"]
+    assert res.result["changed_fields"] == ["allow_non_post_form", "login_button_selector"]
+    method, path, body = fake.writes()[0]
+    assert method == "PUT"
+    assert body["login_button_selector"] == "#b" and body["allow_non_post_form"] is True
+    assert body["login_form_url"] == "https://example.com/login"
+    assert "category" not in body
+
+
+def test_empty_string_matches_null(monkeypatch, fake):
+    # The Bastion stores "" as null: removing a value must not report a change on every run.
+    fake.add("applications", API_WEB)
+    res = run(monkeypatch, application, application_name="web", login_form_url="", login_button_selector="")
+    assert not res.result["changed"] and fake.writes() == []
+
+
+def test_empty_string_removes_value(monkeypatch, fake):
+    fake.add("applications", dict(API_WEB, login_button_selector="#a"))
+    res = run(monkeypatch, application, application_name="web", login_button_selector="")
+    assert res.result["changed"] and res.result["changed_fields"] == ["login_button_selector"]
+    assert fake.writes()[0][2]["login_button_selector"] == ""
+
+
+def test_login_form_options_refused_outside_web_applications(monkeypatch, fake):
+    fake.add("applications", API_STD)
+    res = run(monkeypatch, application, application_name="erp", allow_non_post_form=True)
+    assert res.failed and "can only be set on a web_application, not on a standard" in res.result["msg"]
+    res = run(monkeypatch, application, check_mode=True, application_name="new", connection_policy="RDP",
+              target="jump", paths=PATHS, login_form_url="https://example.com/login")
+    assert res.failed and "login_form_url can only be set on a web_application" in res.result["msg"]
+    assert fake.writes() == []
